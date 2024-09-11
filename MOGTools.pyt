@@ -39,7 +39,7 @@ class ImportAircraftData(object):
             arcpy.conversion.TableToTable(temp_csv, os.path.dirname(out_table), os.path.basename(out_table))
             os.remove(temp_csv)
             arcpy.AddMessage(f"Successfully imported {len(df)} aircraft records.")
-            arcpy.management.OpenTableView(out_table)
+            arcpy.AddMessage(f"Table imported. Please open {out_table} to view data")
         except Exception as e:
             arcpy.AddError(f"An error occurred during import: {str(e)}")
             arcpy.AddError(arcpy.GetMessages())
