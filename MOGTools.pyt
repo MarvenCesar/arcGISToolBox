@@ -3,6 +3,8 @@ import arcpy
 import pandas as pd
 import os
 import math
+import traceback
+
 
 class Toolbox(object):
     def __init__(self):
@@ -61,123 +63,183 @@ class ImportAircraftData(object):
             arcpy.AddError(f"An error occurred during import: {str(e)}")
             arcpy.AddError(arcpy.GetMessages())
 
-# Class for calculating aircraft footprints
 class CalculateAircraftFootprint(object):
     def __init__(self):
         self.label = "Create Aircraft Symbol Layer"
-        self.description = "Create points for selected aircraft at a specific location with corresponding properties, including aircraft footprint"
+        self.description = "Create points for selected aircraft on a specific airfield parking apron in a grid pattern"
 
     def getParameterInfo(self):
         params = [
             arcpy.Parameter(
-                displayName="Input Aircraft Table", 
-                name="in_table", 
-                datatype="DETable", 
-                parameterType="Required", 
+                displayName="Input Aircraft Table",
+                name="in_table",
+                datatype="DETable",
+                parameterType="Required",
                 direction="Input"),
             arcpy.Parameter(
-                displayName="Output Feature Class", 
-                name="out_fc", 
-                datatype="DEFeatureClass", 
-                parameterType="Required", 
+                displayName="Input Airfield Layer",
+                name="airfield_layer",
+                datatype="DEFeatureClass",
+                parameterType="Required",
+                direction="Input"),
+            arcpy.Parameter(
+                displayName="Output Feature Class",
+                name="out_fc",
+                datatype="DEFeatureClass",
+                parameterType="Required",
                 direction="Output"),
             arcpy.Parameter(
-                displayName="Longitude for Points",  # X-coordinate, comes first
-                name="longitude", 
-                datatype="GPDouble", 
-                parameterType="Required", 
-                direction="Input"),
-            arcpy.Parameter(
-                displayName="Latitude for Points",  # Y-coordinate, comes second
-                name="latitude", 
-                datatype="GPDouble", 
-                parameterType="Required", 
-                direction="Input"),
-            arcpy.Parameter(
-                displayName="Aircraft Names (MDS)",  # List of aircraft names to filter
-                name="aircraft_names", 
-                datatype="GPString", 
-                parameterType="Required", 
+                displayName="Aircraft Names (MDS)",
+                name="aircraft_names",
+                datatype="GPString",
+                parameterType="Required",
                 direction="Input",
-                multiValue=True),  # Allow multiple aircraft names
+                multiValue=True),
             arcpy.Parameter(
-                displayName="Quantity for Each Aircraft",  # Quantity of each aircraft to display
-                name="quantity_per_aircraft", 
-                datatype="GPLong", 
-                parameterType="Required", 
+                displayName="Quantity for Each Aircraft",
+                name="quantity_per_aircraft",
+                datatype="GPLong",
+                parameterType="Required",
+                direction="Input"),
+            arcpy.Parameter(
+                displayName="Airfield Name (AFLD_NAME)",
+                name="afld_name",
+                datatype="GPString",
+                parameterType="Required",
+                direction="Input"),
+            arcpy.Parameter(
+                displayName="Airfield ObjectID",
+                name="object_id",
+                datatype="GPLong",
+                parameterType="Required",
+                direction="Input"),
+            arcpy.Parameter(
+                displayName="Buffer Distance (in feet)",
+                name="buffer_distance",
+                datatype="GPDouble",
+                parameterType="Required",
+                direction="Input"),
+            arcpy.Parameter(
+                displayName="Maximum Aircraft per Row",
+                name="max_per_row",
+                datatype="GPLong",
+                parameterType="Required",
                 direction="Input")
         ]
         return params
 
     def execute(self, parameters, messages):
         in_table = parameters[0].valueAsText
-        out_fc = parameters[1].valueAsText
-        base_longitude = float(parameters[2].valueAsText)  # Longitude for initial point placement (X)
-        base_latitude = float(parameters[3].valueAsText)  # Latitude for initial point placement (Y)
-        selected_aircraft = parameters[4].values  # List of selected aircraft names (MDS)
-        quantity_per_aircraft = int(parameters[5].valueAsText)  # Quantity of each aircraft to display
+        airfield_layer = parameters[1].valueAsText
+        out_fc = parameters[2].valueAsText
+        selected_aircraft = parameters[3].values
+        quantity_per_aircraft = int(parameters[4].valueAsText)
+        afld_name = parameters[5].valueAsText
+        object_id = int(parameters[6].valueAsText)
+        buffer_distance = float(parameters[7].valueAsText)
+        max_per_row = int(parameters[8].valueAsText)
 
         try:
-            # Validate the output feature class name
+            # Validate and create output feature class
             workspace = os.path.dirname(out_fc)
             valid_name = arcpy.ValidateTableName(os.path.basename(out_fc), workspace)
             out_fc = os.path.join(workspace, valid_name)
-
-            # Create the feature class as a point layer
-            sr = arcpy.SpatialReference(4326)  # WGS 1984 (or any other appropriate CRS)
+            sr = arcpy.Describe(airfield_layer).spatialReference
             arcpy.CreateFeatureclass_management(workspace, valid_name, "POINT", spatial_reference=sr)
 
-            # Add fields for the aircraft properties and footprint
+            # Add fields for aircraft properties
             arcpy.AddField_management(out_fc, "MDS", "TEXT")
             arcpy.AddField_management(out_fc, "LENGTH", "DOUBLE")
             arcpy.AddField_management(out_fc, "WINGSPAN", "DOUBLE")
-            arcpy.AddField_management(out_fc, "Aircraft_Footprint", "DOUBLE")  # New field for footprint
+            arcpy.AddField_management(out_fc, "Aircraft_Footprint", "DOUBLE")
 
-            # Filter the selected aircraft and calculate footprint
-            with arcpy.da.SearchCursor(in_table, ["MDS", "LENGTH", "WING_SPAN"]) as search_cursor:
+            # Get the airfield data
+            airfield_where_clause = f"AFLD_NAME = '{afld_name}' AND OBJECTID = {object_id}"
+            with arcpy.da.SearchCursor(airfield_layer, ["SHAPE@", "LENGTH", "WIDTH", "LATITUDE", "LONGITUDE", "LCN"], airfield_where_clause) as cursor:
+                for row in cursor:
+                    airfield_shape, apron_length, apron_width, start_lat, start_lon, apron_lcn = row
+                    # Convert to float and handle potential None values
+                    apron_length = float(apron_length) if apron_length is not None else 0
+                    apron_width = float(apron_width) if apron_width is not None else 0
+                    start_lat = float(start_lat) if start_lat is not None else 0
+                    start_lon = float(start_lon) if start_lon is not None else 0
+                    apron_lcn = float(apron_lcn) if apron_lcn is not None else 0
+                    break
+                else:
+                    arcpy.AddError(f"Airfield '{afld_name}' with ObjectID {object_id} not found.")
+                    return
+
+            arcpy.AddMessage(f"Airfield data: Length={apron_length}, Width={apron_width}, Lat={start_lat}, Lon={start_lon}, LCN={apron_lcn}")
+
+            # Process each selected aircraft
+            with arcpy.da.SearchCursor(in_table, ["MDS", "LENGTH", "WING_SPAN", "ACFT_LCN"]) as search_cursor:
                 with arcpy.da.InsertCursor(out_fc, ["SHAPE@", "MDS", "LENGTH", "WINGSPAN", "Aircraft_Footprint"]) as insert_cursor:
-                    i = 0  # Counter for placing the points slightly apart
-
                     for row in search_cursor:
-                        mds, length, wingspan = row
-
-                        # Only process if MDS is in the list of selected aircraft
+                        mds, length, wingspan, aircraft_lcn = row
                         if mds in selected_aircraft:
-                            if length is None or wingspan is None:
-                                arcpy.AddWarning(f"Skipping {mds}: Missing LENGTH or WING_SPAN.")
-                                continue  # Skip records with missing values
+                            # Convert to float and handle potential None values
+                            length = float(length) if length is not None else 0
+                            wingspan = float(wingspan) if wingspan is not None else 0
+                            aircraft_lcn = float(aircraft_lcn) if aircraft_lcn is not None else 0
 
-                            # Calculate the footprint (area of the rectangle)
+                            if length == 0 or wingspan == 0 or aircraft_lcn == 0:
+                                arcpy.AddWarning(f"Skipping {mds}: Invalid LENGTH, WING_SPAN, or ACFT_LCN.")
+                                continue
+
+                            arcpy.AddMessage(f"Processing aircraft {mds}: Length={length}, Wingspan={wingspan}, LCN={aircraft_lcn}")
+
+                            # Check LCN compatibility
+                            if aircraft_lcn > apron_lcn:
+                                arcpy.AddWarning(f"Aircraft {mds} LCN ({aircraft_lcn}) exceeds apron LCN ({apron_lcn}). Placement may not be suitable.")
+
                             aircraft_footprint = length * wingspan
+                            arcpy.AddMessage(f"Placing {quantity_per_aircraft} {mds} aircraft (Footprint: {aircraft_footprint})")
 
-                            # For each aircraft, insert the specified number of points
-                            for _ in range(quantity_per_aircraft):
-                                # Offset each point slightly from the base latitude/longitude to avoid overlap
-                                lat_offset = base_latitude + (i * 0.0001)  # Offset by a small value for each aircraft
-                                lon_offset = base_longitude + (i * 0.0001)  # Offset similarly in longitude
+                            points_placed = 0
+                            row_index = 0
+                            col_index = 0
 
-                                # Create a point geometry at the specific location
-                                point = arcpy.Point(lon_offset, lat_offset)
+                            while points_placed < quantity_per_aircraft:
+                                # Calculate position based on grid
+                                x = start_lon + (col_index * (wingspan + buffer_distance) / 111111)  # Approximate conversion
+                                y = start_lat + (row_index * (length + buffer_distance) / 111111)  # Approximate conversion
 
-                                # Insert the point along with its properties and footprint
+                                # Check if we're still within a reasonable range of the apron
+                                if (abs(x - start_lon) > (apron_width / 111111) * 2) or (abs(y - start_lat) > (apron_length / 111111) * 2):
+                                    arcpy.AddWarning(f"Exceeded reasonable placement area. Placed {points_placed} out of {quantity_per_aircraft} {mds} aircraft.")
+                                    break
+
+                                point = arcpy.Point(x, y)
                                 insert_cursor.insertRow([point, mds, length, wingspan, aircraft_footprint])
+                                points_placed += 1
+                                arcpy.AddMessage(f"Placed {mds} at ({x}, {y}). Point {points_placed} of {quantity_per_aircraft}")
 
-                                # Debugging message
-                                arcpy.AddMessage(f"Created point for {mds} at ({lon_offset}, {lat_offset}) with LENGTH: {length}, WING_SPAN: {wingspan}, and Footprint: {aircraft_footprint}")
-                                
-                                i += 1  # Increment offset for the next point
+                                col_index += 1
+                                if col_index >= max_per_row:
+                                    col_index = 0
+                                    row_index += 1
+
+                            if points_placed < quantity_per_aircraft:
+                                arcpy.AddWarning(f"Could only place {points_placed} out of {quantity_per_aircraft} {mds} aircraft.")
+                            else:
+                                arcpy.AddMessage(f"Successfully placed all {quantity_per_aircraft} {mds} aircraft.")
+
+                            # Add summary information
+                            arcpy.AddMessage(f"Placement summary for {mds}:")
+                            arcpy.AddMessage(f"  - Aircraft dimensions: Length={length}, Wingspan={wingspan}")
+                            arcpy.AddMessage(f"  - Buffer distance: {buffer_distance}")
+                            arcpy.AddMessage(f"  - Max per row: {max_per_row}")
+                            arcpy.AddMessage(f"  - Apron dimensions: Length={apron_length}, Width={apron_width}")
+                            arcpy.AddMessage(f"  - Total aircraft placed: {points_placed}")
+                            arcpy.AddMessage(f"  - Rows used: {row_index + 1}")
+                            arcpy.AddMessage(f"  - Columns in last row: {col_index}")
 
             arcpy.AddMessage(f"Aircraft points with footprints created in {out_fc}")
 
         except Exception as e:
             arcpy.AddError(f"An error occurred while creating the points: {str(e)}")
             arcpy.AddError(arcpy.GetMessages())
-
-
-
-
-
-
+            arcpy.AddError(traceback.format_exc())
 
 # Class for calculating Maximum On Ground (MOG)
 class CalculateMaximumOnGround(object):
