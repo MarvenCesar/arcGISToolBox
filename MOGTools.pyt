@@ -63,10 +63,14 @@ class ImportAircraftData(object):
             arcpy.AddError(f"An error occurred during import: {str(e)}")
             arcpy.AddError(arcpy.GetMessages())
 
+import arcpy
+import os
+import traceback
+
 class CalculateAircraftFootprint(object):
     def __init__(self):
         self.label = "Create Aircraft Symbol Layer (Aircraft-Shaped Polygons)"
-        self.description = "Create polygon footprints resembling aircraft shapes for selected aircraft at specified airfield location."
+        self.description = "Create polygon footprints resembling aircraft shapes for a selected aircraft at specified airfield location."
 
     def getParameterInfo(self):
         params = [
@@ -89,15 +93,14 @@ class CalculateAircraftFootprint(object):
                 parameterType="Required",
                 direction="Output"),
             arcpy.Parameter(
-                displayName="Aircraft Names (MDS)",
-                name="aircraft_names",
+                displayName="Aircraft Name (MDS)",
+                name="aircraft_name",
                 datatype="GPString",
                 parameterType="Required",
-                direction="Input",
-                multiValue=True),
+                direction="Input"),
             arcpy.Parameter(
-                displayName="Quantity for Each Aircraft",
-                name="quantity_per_aircraft",
+                displayName="Quantity of Aircraft",
+                name="quantity_of_aircraft",
                 datatype="GPLong",
                 parameterType="Required",
                 direction="Input"),
@@ -160,8 +163,8 @@ class CalculateAircraftFootprint(object):
         in_table = parameters[0].valueAsText
         airfield_layer = parameters[1].valueAsText
         out_fc = parameters[2].valueAsText
-        selected_aircraft = parameters[3].values
-        quantity_per_aircraft = int(parameters[4].valueAsText)
+        selected_aircraft = parameters[3].valueAsText
+        quantity_of_aircraft = int(parameters[4].valueAsText)
         afld_name = parameters[5].valueAsText
         object_id = int(parameters[6].valueAsText)
         buffer_distance = float(parameters[7].valueAsText)
@@ -198,33 +201,33 @@ class CalculateAircraftFootprint(object):
 
             arcpy.AddMessage(f"Airfield data: Length={apron_length}, Width={apron_width}, Lat={start_lat}, Lon={start_lon}, LCN={apron_lcn}")
 
-            # Process each selected aircraft
+            # Process the selected aircraft
             with arcpy.da.SearchCursor(in_table, ["MDS", "LENGTH", "WING_SPAN", "ACFT_LCN"]) as search_cursor:
-                with arcpy.da.InsertCursor(out_fc, ["SHAPE@", "MDS", "LENGTH", "WINGSPAN", "Aircraft_Footprint"]) as insert_cursor:
-                    for row in search_cursor:
-                        mds, length, wingspan, aircraft_lcn = row
-                        if mds in selected_aircraft:
-                            length = float(length) if length is not None else 0
-                            wingspan = float(wingspan) if wingspan is not None else 0
-                            aircraft_lcn = float(aircraft_lcn) if aircraft_lcn is not None else 0
+                for row in search_cursor:
+                    mds, length, wingspan, aircraft_lcn = row
+                    if mds == selected_aircraft:
+                        length = float(length) if length is not None else 0
+                        wingspan = float(wingspan) if wingspan is not None else 0
+                        aircraft_lcn = float(aircraft_lcn) if aircraft_lcn is not None else 0
 
-                            if length == 0 or wingspan == 0 or aircraft_lcn == 0:
-                                arcpy.AddWarning(f"Skipping {mds}: Invalid LENGTH, WING_SPAN, or ACFT_LCN.")
-                                continue
+                        if length == 0 or wingspan == 0 or aircraft_lcn == 0:
+                            arcpy.AddError(f"Invalid data for {mds}: LENGTH={length}, WING_SPAN={wingspan}, ACFT_LCN={aircraft_lcn}")
+                            return
 
-                            arcpy.AddMessage(f"Processing aircraft {mds}: Length={length}, Wingspan={wingspan}, LCN={aircraft_lcn}")
+                        arcpy.AddMessage(f"Processing aircraft {mds}: Length={length}, Wingspan={wingspan}, LCN={aircraft_lcn}")
 
-                            if aircraft_lcn > apron_lcn:
-                                arcpy.AddWarning(f"Aircraft {mds} LCN ({aircraft_lcn}) exceeds apron LCN ({apron_lcn}). Placement may not be suitable.")
+                        if aircraft_lcn > apron_lcn:
+                            arcpy.AddWarning(f"Aircraft {mds} LCN ({aircraft_lcn}) exceeds apron LCN ({apron_lcn}). Placement may not be suitable.")
 
-                            length_in_degrees = length / 364000  # Approximate conversion from feet to degrees latitude
-                            wingspan_in_degrees = wingspan / 364000
+                        length_in_degrees = length / 364000  # Approximate conversion from feet to degrees latitude
+                        wingspan_in_degrees = wingspan / 364000
 
+                        with arcpy.da.InsertCursor(out_fc, ["SHAPE@", "MDS", "LENGTH", "WINGSPAN", "Aircraft_Footprint"]) as insert_cursor:
                             points_placed = 0
                             row_index = 0
                             col_index = 0
 
-                            while points_placed < quantity_per_aircraft:
+                            while points_placed < quantity_of_aircraft:
                                 x_start = start_lon + (col_index * (wingspan_in_degrees + buffer_distance / 364000))
                                 y_start = start_lat + (row_index * (length_in_degrees + buffer_distance / 364000))
 
@@ -236,7 +239,7 @@ class CalculateAircraftFootprint(object):
                                 insert_cursor.insertRow([polygon, mds, length, wingspan, length * wingspan])
                                 points_placed += 1
                                 
-                                arcpy.AddMessage(f"Placed {mds} at ({x_start}, {y_start}) - {points_placed}/{quantity_per_aircraft}")
+                                arcpy.AddMessage(f"Placed {mds} at ({x_start}, {y_start}) - {points_placed}/{quantity_of_aircraft}")
 
                                 # Move to the next column or row
                                 col_index += 1
@@ -244,41 +247,17 @@ class CalculateAircraftFootprint(object):
                                     col_index = 0
                                     row_index += 1
 
+                        break
+                else:
+                    arcpy.AddError(f"Aircraft {selected_aircraft} not found in the input table.")
+                    return
+
             arcpy.AddMessage(f"Aircraft polygons created in {out_fc}")
 
         except Exception as e:
             arcpy.AddError(f"An error occurred while creating the polygons: {str(e)}")
             arcpy.AddError(arcpy.GetMessages())
             arcpy.AddError(traceback.format_exc())
-
-# Function to create an aircraft-shaped polygon
-def create_aircraft_polygon(x_start, y_start, length, wingspan):
-    # Define proportions (adjust these to fine-tune the shape)
-    fuselage_width = length * 0.1
-    nose_length = length * 0.2
-    tail_length = length * 0.15
-    wing_sweep = length * 0.1
-    tail_sweep = length * 0.05
-
-    corners = [
-        arcpy.Point(x_start, y_start + length / 2),  # Nose tip
-        arcpy.Point(x_start - fuselage_width / 2, y_start + length / 2 - nose_length),  # Nose left
-        arcpy.Point(x_start - wingspan / 2, y_start + wing_sweep),  # Left wingtip front
-        arcpy.Point(x_start - wingspan / 2, y_start),  # Left wingtip middle
-        arcpy.Point(x_start - wingspan / 2, y_start - wing_sweep),  # Left wingtip rear
-        arcpy.Point(x_start - fuselage_width / 2, y_start - length / 2 + tail_length),  # Fuselage left before tail
-        arcpy.Point(x_start - wingspan / 4, y_start - length / 2),  # Left tail tip
-        arcpy.Point(x_start, y_start - length / 2 - tail_sweep),  # Tail bottom tip
-        arcpy.Point(x_start + wingspan / 4, y_start - length / 2),  # Right tail tip
-        arcpy.Point(x_start + fuselage_width / 2, y_start - length / 2 + tail_length),  # Fuselage right before tail
-        arcpy.Point(x_start + wingspan / 2, y_start - wing_sweep),  # Right wingtip rear
-        arcpy.Point(x_start + wingspan / 2, y_start),  # Right wingtip middle
-        arcpy.Point(x_start + wingspan / 2, y_start + wing_sweep),  # Right wingtip front
-        arcpy.Point(x_start + fuselage_width / 2, y_start + length / 2 - nose_length),  # Nose right
-        arcpy.Point(x_start, y_start + length / 2)  # Back to nose tip
-    ]
-    
-    return corners
 
 
 
