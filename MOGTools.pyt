@@ -19,49 +19,70 @@ class ImportAircraftData(object):
         self.description = "Import aircraft specifications from a CSV file"
 
     def getParameterInfo(self):
-        params = [
-            arcpy.Parameter(
-                displayName="Input CSV File", 
-                name="in_csv", 
-                datatype="DEFile", 
-                parameterType="Required", 
-                direction="Input"),
-            arcpy.Parameter(
-                displayName="Output Aircraft Table", 
-                name="out_table", 
-                datatype="DETable", 
-                parameterType="Required", 
-                direction="Output")
-        ]
-        return params
+        in_table = arcpy.Parameter(
+            displayName="Select Table from Project", 
+            name="in_table", 
+            datatype="GPTableView", 
+            parameterType="Required", 
+            direction="Input")
+        
+        selected_columns = arcpy.Parameter(
+            displayName="Select Columns", 
+            name="selected_columns", 
+            datatype="GPString", 
+            parameterType="Required", 
+            direction="Input", 
+            multiValue=True)
+        
+        out_table = arcpy.Parameter(
+            displayName="Output Aircraft Table", 
+            name="out_table", 
+            datatype="DETable", 
+            parameterType="Required", 
+            direction="Output")
+
+        selected_columns.parameterDependencies = [in_table.name]
+        selected_columns.filter.type = "ValueList"
+
+        return [in_table, selected_columns, out_table]
+
+    def updateParameters(self, parameters):
+        in_table = parameters[0]
+        selected_columns = parameters[1]
+
+        if in_table.altered and not in_table.hasBeenValidated:
+            # Get the list of columns from the table in the project
+            if in_table.valueAsText:
+                fields = arcpy.ListFields(in_table.valueAsText)
+                columns = [field.name for field in fields]
+                selected_columns.filter.list = columns
+                if not selected_columns.value:
+                    selected_columns.value = columns
+        return
 
     def execute(self, parameters, messages):
         in_csv = parameters[0].valueAsText
         out_table = parameters[1].valueAsText
         try:
-            if not os.path.exists(in_csv):
-                arcpy.AddError(f"Input CSV file does not exist: {in_csv}")
-                return
-
-            df = pd.read_csv(in_csv)
-            df = df.dropna(subset=['MDS'])  # Drop rows with missing MDS
-
-            numeric_columns = ['LENGTH', 'WING_SPAN', 'HEIGHT', 'WING_HEIGHT', 'TURNING_RADIUS', 'MIN_RWY_LENGTH', 'ACFT_LCN']
-            for col in numeric_columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-
-            temp_csv = os.path.join(arcpy.env.scratchFolder, "temp.csv")
-            df.to_csv(temp_csv, index=False)
+            # Create an output table to store the selected columns and their data
+            arcpy.CreateTable_management(os.path.dirname(out_table), os.path.basename(out_table))
             
-            arcpy.conversion.TableToTable(temp_csv, os.path.dirname(out_table), os.path.basename(out_table))
-            os.remove(temp_csv)
-            
-            arcpy.AddMessage(f"Successfully imported {len(df)} aircraft records.")
-            arcpy.AddMessage(f"Table imported. Please open {out_table} to view data")
-        
+            # Add fields to the output table based on the selected columns
+            for column in selected_columns:
+                arcpy.AddField_management(out_table, column, "TEXT")
+
+            # Insert data into the output table
+            with arcpy.da.SearchCursor(in_table, selected_columns) as cursor:
+                with arcpy.da.InsertCursor(out_table, selected_columns) as insert_cursor:
+                    for row in cursor:
+                        insert_cursor.insertRow(row)
+
+            arcpy.AddMessage(f"Data from {in_table} has been successfully imported to {out_table}.")
+
         except Exception as e:
-            arcpy.AddError(f"An error occurred during import: {str(e)}")
+            arcpy.AddError(f"An error occurred while processing the table: {str(e)}")
             arcpy.AddError(arcpy.GetMessages())
+            arcpy.AddError(traceback.format_exc())
 
 import arcpy
 import os
