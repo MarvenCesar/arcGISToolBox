@@ -21,11 +21,18 @@ class ImportAircraftData(object):
     def getParameterInfo(self):
         params = [
             arcpy.Parameter(
-                displayName="Input CSV File", 
-                name="in_csv", 
-                datatype="DEFile", 
+                displayName="Select Table from Project", 
+                name="in_table", 
+                datatype="GPTableView", 
                 parameterType="Required", 
                 direction="Input"),
+            arcpy.Parameter(
+                displayName="Select Columns", 
+                name="selected_columns", 
+                datatype="GPString", 
+                parameterType="Optional", 
+                direction="Input", 
+                multiValue=True),
             arcpy.Parameter(
                 displayName="Output Aircraft Table", 
                 name="out_table", 
@@ -33,11 +40,27 @@ class ImportAircraftData(object):
                 parameterType="Required", 
                 direction="Output")
         ]
+
+        #params[1].filter.type = "ValueList"
         return params
 
+    def updateParameters(self, parameters):
+        if parameters[0].altered and not parameters[0].hasBeenValidated:
+            # Get the list of columns from the CSV file
+            in_table = parameters[0].valueAsText
+            if in_table:
+                fields = arcpy.ListFields(in_table)
+                columns = [field.name for field in fields]
+                parameters[1].filter.list = columns
+                if not parameters[1].value:
+                    parameters[1].value = columns
+        return
+
     def execute(self, parameters, messages):
-        in_csv = parameters[0].valueAsText
-        out_table = parameters[1].valueAsText
+        in_table = parameters[0].valueAsText
+        selected_columns = parameters[1].values
+        out_table = parameters[2].valueAsText
+
         try:
             if not os.path.exists(in_csv):
                 arcpy.AddError(f"Input CSV file does not exist: {in_csv}")
@@ -46,9 +69,13 @@ class ImportAircraftData(object):
             df = pd.read_csv(in_csv)
             df = df.dropna(subset=['MDS'])  # Drop rows with missing MDS
 
+            if selected_columns:
+                df = df[selected_columns]
+
             numeric_columns = ['LENGTH', 'WING_SPAN', 'HEIGHT', 'WING_HEIGHT', 'TURNING_RADIUS', 'MIN_RWY_LENGTH', 'ACFT_LCN']
             for col in numeric_columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
 
             temp_csv = os.path.join(arcpy.env.scratchFolder, "temp.csv")
             df.to_csv(temp_csv, index=False)
