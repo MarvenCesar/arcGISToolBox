@@ -121,18 +121,18 @@ class CalculateAircraftFootprint(object):
                 datatype="GPLong",
                 parameterType="Required",
                 direction="Input"),
-            arcpy.Parameter(
-                displayName="Airfield Name (AFLD_NAME)",
-                name="afld_name",
-                datatype="GPString",
-                parameterType="Required",
-                direction="Input"),
-            arcpy.Parameter(
-                displayName="Airfield ObjectID",
-                name="object_id",
-                datatype="GPLong",
-                parameterType="Required",
-                direction="Input"),
+            # arcpy.Parameter(
+            #     displayName="Airfield Name (AFLD_NAME)",
+            #     name="afld_name",
+            #     datatype="GPString",
+            #     parameterType="Required",
+            #     direction="Input"),
+            # arcpy.Parameter(
+            #     displayName="Airfield ObjectID",
+            #     name="object_id",
+            #     datatype="GPLong",
+            #     parameterType="Required",
+            #     direction="Input"),
             arcpy.Parameter(
                 displayName="Buffer Distance (in feet)",
                 name="buffer_distance",
@@ -187,11 +187,11 @@ class CalculateAircraftFootprint(object):
         airfield_layer = parameters[1].valueAsText
         selected_aircraft = parameters[2].valueAsText
         quantity_of_aircraft = int(parameters[3].valueAsText)
-        afld_name = parameters[4].valueAsText
-        object_id = int(parameters[5].valueAsText)
-        buffer_distance = float(parameters[6].valueAsText)
-        max_per_row = int(parameters[7].valueAsText)
-        out_fc = parameters[8].valueAsText
+        # afld_name = parameters[2].valueAsText
+        # object_id = int(parameters[2].valueAsText)
+        buffer_distance = float(parameters[4].valueAsText)
+        max_per_row = int(parameters[5].valueAsText)
+        out_fc = parameters[6].valueAsText
 
         try:
             # Validate and create output feature class
@@ -208,8 +208,8 @@ class CalculateAircraftFootprint(object):
             arcpy.AddField_management(out_fc, "Aircraft_Footprint", "DOUBLE")
 
             # Get the airfield data (location and size)
-            airfield_where_clause = f"AFLD_NAME = '{afld_name}' AND OBJECTID = {object_id}"
-            with arcpy.da.SearchCursor(airfield_layer, ["SHAPE@", "LENGTH", "WIDTH", "LATITUDE", "LONGITUDE", "LCN"], airfield_where_clause) as cursor:
+            # airfield_where_clause = f"AFLD_NAME = '{afld_name}' AND OBJECTID = {object_id}"
+            with arcpy.da.SearchCursor(airfield_layer, ["SHAPE@", "LENGTH", "WIDTH", "LATITUDE", "LONGITUDE", "LCN"]) as cursor:
                 for row in cursor:
                     airfield_shape, apron_length, apron_width, start_lat, start_lon, apron_lcn = row
                     apron_length = float(apron_length) if apron_length is not None else 0
@@ -218,9 +218,9 @@ class CalculateAircraftFootprint(object):
                     start_lon = float(start_lon) if start_lon is not None else 0
                     apron_lcn = float(apron_lcn) if apron_lcn is not None else 0
                     break
-                else:
-                    arcpy.AddError(f"Airfield '{afld_name}' with ObjectID {object_id} not found.")
-                    return
+                # else:
+                #     arcpy.AddError(f"Airfield '{afld_name}' with ObjectID {object_id} not found.")
+                #     return
 
             arcpy.AddMessage(f"Airfield data: Length={apron_length}, Width={apron_width}, Lat={start_lat}, Lon={start_lon}, LCN={apron_lcn}")
 
@@ -281,9 +281,6 @@ class CalculateAircraftFootprint(object):
             arcpy.AddError(f"An error occurred while creating the polygons: {str(e)}")
             arcpy.AddError(arcpy.GetMessages())
             arcpy.AddError(traceback.format_exc())
-
-
-
 
 # Class for calculating Maximum On Ground (MOG)
 class CalculateMaximumOnGround(object):
