@@ -100,21 +100,15 @@ class CalculateAircraftFootprint(object):
             arcpy.Parameter(
                 displayName="Input Aircraft Table",
                 name="in_table",
-                datatype="DETable",
+                datatype="GPTableView",
                 parameterType="Required",
                 direction="Input"),
             arcpy.Parameter(
                 displayName="Input Airfield Layer",
                 name="airfield_layer",
-                datatype="DEFeatureClass",
+                datatype="GPLayer",
                 parameterType="Required",
                 direction="Input"),
-            arcpy.Parameter(
-                displayName="Output Feature Class",
-                name="out_fc",
-                datatype="DEFeatureClass",
-                parameterType="Required",
-                direction="Output"),
             arcpy.Parameter(
                 displayName="Aircraft Name (MDS)",
                 name="aircraft_name",
@@ -150,7 +144,13 @@ class CalculateAircraftFootprint(object):
                 name="max_per_row",
                 datatype="GPLong",
                 parameterType="Required",
-                direction="Input")
+                direction="Input"),
+            arcpy.Parameter(
+                displayName="Output Feature Class",
+                name="out_fc",
+                datatype="DEFeatureClass",
+                parameterType="Required",
+                direction="Output")
         ]
         return params
 
@@ -185,13 +185,13 @@ class CalculateAircraftFootprint(object):
         # Retrieve parameters
         in_table = parameters[0].valueAsText
         airfield_layer = parameters[1].valueAsText
-        out_fc = parameters[2].valueAsText
-        selected_aircraft = parameters[3].valueAsText
-        quantity_of_aircraft = int(parameters[4].valueAsText)
-        afld_name = parameters[5].valueAsText
-        object_id = int(parameters[6].valueAsText)
-        buffer_distance = float(parameters[7].valueAsText)
-        max_per_row = int(parameters[8].valueAsText)
+        selected_aircraft = parameters[2].valueAsText
+        quantity_of_aircraft = int(parameters[3].valueAsText)
+        afld_name = parameters[4].valueAsText
+        object_id = int(parameters[5].valueAsText)
+        buffer_distance = float(parameters[6].valueAsText)
+        max_per_row = int(parameters[7].valueAsText)
+        out_fc = parameters[8].valueAsText
 
         try:
             # Validate and create output feature class
