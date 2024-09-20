@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 import arcpy
 import pandas as pd
 import os
@@ -259,9 +258,6 @@ class CalculateAircraftFootprint(object):
             arcpy.AddError(arcpy.GetMessages())
             arcpy.AddError(traceback.format_exc())
 
-
-
-
 # Class for calculating Maximum On Ground (MOG)
 class CalculateMaximumOnGround(object):
     def __init__(self):
@@ -365,17 +361,9 @@ class CalculateMaximumOnGround(object):
 
     def calculate_mog(self, apron_length, apron_width, aircraft_length, aircraft_wingspan,
                       interior_taxi_width, peripheral_taxi_width, wingtip_clearance):
-        available_length = apron_length
-        rows = math.floor((available_length + interior_taxi_width) / (aircraft_length + interior_taxi_width))
-        available_width = max(0, apron_width - peripheral_taxi_width)
-        cols = math.floor((available_width + wingtip_clearance) / (aircraft_wingspan + wingtip_clearance))
-        parking_available_1 = rows * cols
-
-        available_length = apron_width
-        rows = math.floor((available_length + interior_taxi_width) / (aircraft_length + interior_taxi_width))
-        available_width = max(0, apron_length - peripheral_taxi_width)
-        cols = math.floor((available_width + wingtip_clearance) / (aircraft_wingspan + wingtip_clearance))
-        parking_available_2 = rows * cols
+        # Calculate the number of aircraft that can be parked on the apron
+        # Based on the formula provided in the pseudocode
+        parking_available_1 = math.floor((apron_length - 2 * interior_taxi_width) / (aircraft_length + wingtip_clearance))
+        parking_available_2 = math.floor((apron_width - 2 * peripheral_taxi_width) / (aircraft_wingspan + wingtip_clearance))
 
         return max(parking_available_1, parking_available_2)
-
