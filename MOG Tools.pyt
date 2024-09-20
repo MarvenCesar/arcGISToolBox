@@ -5,90 +5,90 @@ import os
 import math
 import traceback
 
-
 class Toolbox(object):
     def __init__(self):
         self.label = "Aircraft MOG Optimization"
         self.alias = "AircraftMOG"
-        self.tools = [ImportAircraftData, CalculateAircraftFootprint, CalculateMaximumOnGround]
+        self.tools = ['''ImportAircraftData''',
+                      CalculateAircraftFootprint,
+                      CalculateMaximumOnGround
+                      ]
 
 # Class for importing aircraft data
-class ImportAircraftData(object):
-    def __init__(self):
-        self.label = "Import Aircraft Data"
-        self.description = "Import aircraft specifications from a CSV file"
+# Commented out due to being obsolete function. Code remains for reference.
 
-    def getParameterInfo(self):
-        in_table = arcpy.Parameter(
-            displayName="Select Table from Project", 
-            name="in_table", 
-            datatype="GPTableView", 
-            parameterType="Required", 
-            direction="Input")
+# class ImportAircraftData(object):
+#     def __init__(self):
+#         self.label = "Import Aircraft Data"
+#         self.description = "Import aircraft specifications from a CSV file"
+
+#     def getParameterInfo(self):
+#         in_table = arcpy.Parameter(
+#             displayName="Select Table from Project", 
+#             name="in_table", 
+#             datatype="GPTableView", 
+#             parameterType="Required", 
+#             direction="Input")
         
-        selected_columns = arcpy.Parameter(
-            displayName="Select Columns", 
-            name="selected_columns", 
-            datatype="GPString", 
-            parameterType="Required", 
-            direction="Input", 
-            multiValue=True)
+#         selected_columns = arcpy.Parameter(
+#             displayName="Select Columns", 
+#             name="selected_columns", 
+#             datatype="GPString", 
+#             parameterType="Required", 
+#             direction="Input", 
+#             multiValue=True)
         
-        out_table = arcpy.Parameter(
-            displayName="Output Aircraft Table", 
-            name="out_table", 
-            datatype="DETable", 
-            parameterType="Required", 
-            direction="Output")
+#         out_table = arcpy.Parameter(
+#             displayName="Output Aircraft Table", 
+#             name="out_table", 
+#             datatype="DETable", 
+#             parameterType="Required", 
+#             direction="Output")
 
-        selected_columns.parameterDependencies = [in_table.name]
-        selected_columns.filter.type = "ValueList"
+#         selected_columns.parameterDependencies = [in_table.name]
+#         selected_columns.filter.type = "ValueList"
 
-        return [in_table, selected_columns, out_table]
+#         return [in_table, selected_columns, out_table]
 
-    def updateParameters(self, parameters):
-        in_table = parameters[0]
-        selected_columns = parameters[1]
+#     def updateParameters(self, parameters):
+#         in_table = parameters[0]
+#         selected_columns = parameters[1]
 
-        if in_table.altered and not in_table.hasBeenValidated:
-            # Get the list of columns from the table in the project
-            if in_table.valueAsText:
-                fields = arcpy.ListFields(in_table.valueAsText)
-                columns = [field.name for field in fields]
-                selected_columns.filter.list = columns
-                if not selected_columns.value:
-                    selected_columns.value = columns
-        return
+#         if in_table.altered and not in_table.hasBeenValidated:
+#             # Get the list of columns from the table in the project
+#             if in_table.valueAsText:
+#                 fields = arcpy.ListFields(in_table.valueAsText)
+#                 columns = [field.name for field in fields]
+#                 selected_columns.filter.list = columns
+#                 if not selected_columns.value:
+#                     selected_columns.value = columns
+#         return
 
-    def execute(self, parameters, messages):
-        in_table = parameters[0].valueAsText
-        selected_columns = parameters[1].values
-        out_table = parameters[2].valueAsText
+#     def execute(self, parameters, messages):
+#         in_table = parameters[0].valueAsText
+#         selected_columns = parameters[1].values
+#         out_table = parameters[2].valueAsText
 
-        try:
-            # Create an output table to store the selected columns and their data
-            arcpy.CreateTable_management(os.path.dirname(out_table), os.path.basename(out_table))
+#         try:
+#             # Create an output table to store the selected columns and their data
+#             arcpy.CreateTable_management(os.path.dirname(out_table), os.path.basename(out_table))
             
-            # Add fields to the output table based on the selected columns
-            for column in selected_columns:
-                arcpy.AddField_management(out_table, column, "TEXT")
+#             # Add fields to the output table based on the selected columns
+#             for column in selected_columns:
+#                 arcpy.AddField_management(out_table, column, "TEXT")
 
-            # Insert data into the output table
-            with arcpy.da.SearchCursor(in_table, selected_columns) as cursor:
-                with arcpy.da.InsertCursor(out_table, selected_columns) as insert_cursor:
-                    for row in cursor:
-                        insert_cursor.insertRow(row)
+#             # Insert data into the output table
+#             with arcpy.da.SearchCursor(in_table, selected_columns) as cursor:
+#                 with arcpy.da.InsertCursor(out_table, selected_columns) as insert_cursor:
+#                     for row in cursor:
+#                         insert_cursor.insertRow(row)
 
-            arcpy.AddMessage(f"Data from {in_table} has been successfully imported to {out_table}.")
+#             arcpy.AddMessage(f"Data from {in_table} has been successfully imported to {out_table}.")
 
-        except Exception as e:
-            arcpy.AddError(f"An error occurred while processing the table: {str(e)}")
-            arcpy.AddError(arcpy.GetMessages())
-            arcpy.AddError(traceback.format_exc())
-
-import arcpy
-import os
-import traceback
+#         except Exception as e:
+#             arcpy.AddError(f"An error occurred while processing the table: {str(e)}")
+#             arcpy.AddError(arcpy.GetMessages())
+#             arcpy.AddError(traceback.format_exc())
 
 class CalculateAircraftFootprint(object):
     def __init__(self):
