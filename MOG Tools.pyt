@@ -110,6 +110,12 @@ class CalculateAircraftFootprint(object):
                 parameterType="Required",
                 direction="Input"),
             arcpy.Parameter(
+                displayName="Airfield ObjectID",
+                name="object_id",
+                datatype="GPLong",
+                parameterType="Required",
+                direction="Input"),
+            arcpy.Parameter(
                 displayName="Aircraft Name (MDS)",
                 name="aircraft_name",
                 datatype="GPString",
@@ -121,18 +127,6 @@ class CalculateAircraftFootprint(object):
                 datatype="GPLong",
                 parameterType="Required",
                 direction="Input"),
-            # arcpy.Parameter(
-            #     displayName="Airfield Name (AFLD_NAME)",
-            #     name="afld_name",
-            #     datatype="GPString",
-            #     parameterType="Required",
-            #     direction="Input"),
-            # arcpy.Parameter(
-            #     displayName="Airfield ObjectID",
-            #     name="object_id",
-            #     datatype="GPLong",
-            #     parameterType="Required",
-            #     direction="Input"),
             arcpy.Parameter(
                 displayName="Buffer Distance (in feet)",
                 name="buffer_distance",
@@ -152,7 +146,28 @@ class CalculateAircraftFootprint(object):
                 parameterType="Required",
                 direction="Output")
         ]
+
+        params[2].parameterDependencies = [params[1].name]
+        
         return params
+    
+    def updateParameters(self, parameters):
+        airfield_layer = parameters[1]
+        object_id_param = parameters[2]
+
+        if airfield_layer.altered and not airfield_layer.hasBeenValidated:
+            if airfield_layer.valueAsText:
+                try:
+                    # Get the list of OBJECTIDs from the airfield layer
+                    with arcpy.da.SearchCursor(airfield_layer.valueAsText, ["OBJECTID"]) as cursor:
+                        object_ids = [row[0] for row in cursor]
+                    
+                    object_id_param.filter.list = object_ids
+                    if not object_id_param.value:
+                        object_id_param.value = object_ids[0] if object_ids else None
+                except Exception as e:
+                    arcpy.AddError(f"An error occurred while retrieving OBJECTIDs: {str(e)}")
+        return
 
     def create_aircraft_shape(self, x_start, y_start, length, wingspan):
         # Define proportions
@@ -185,13 +200,12 @@ class CalculateAircraftFootprint(object):
         # Retrieve parameters
         in_table = parameters[0].valueAsText
         airfield_layer = parameters[1].valueAsText
-        selected_aircraft = parameters[2].valueAsText
-        quantity_of_aircraft = int(parameters[3].valueAsText)
-        # afld_name = parameters[2].valueAsText
-        # object_id = int(parameters[2].valueAsText)
-        buffer_distance = float(parameters[4].valueAsText)
-        max_per_row = int(parameters[5].valueAsText)
-        out_fc = parameters[6].valueAsText
+        object_id = int(parameters[2].valueAsText)
+        selected_aircraft = parameters[3].valueAsText
+        quantity_of_aircraft = int(parameters[4].valueAsText)
+        buffer_distance = float(parameters[5].valueAsText)
+        max_per_row = int(parameters[6].valueAsText)
+        out_fc = parameters[7].valueAsText
 
         try:
             # Validate and create output feature class
@@ -208,8 +222,7 @@ class CalculateAircraftFootprint(object):
             arcpy.AddField_management(out_fc, "Aircraft_Footprint", "DOUBLE")
 
             # Get the airfield data (location and size)
-            # airfield_where_clause = f"AFLD_NAME = '{afld_name}' AND OBJECTID = {object_id}"
-            with arcpy.da.SearchCursor(airfield_layer, ["SHAPE@", "LENGTH", "WIDTH", "LATITUDE", "LONGITUDE", "LCN"]) as cursor:
+            with arcpy.da.SearchCursor(airfield_layer, ["SHAPE@", "LENGTH", "WIDTH", "LATITUDE", "LONGITUDE", "LCN"], f"OBJECTID = {object_id}") as cursor:
                 for row in cursor:
                     airfield_shape, apron_length, apron_width, start_lat, start_lon, apron_lcn = row
                     apron_length = float(apron_length) if apron_length is not None else 0
@@ -218,9 +231,6 @@ class CalculateAircraftFootprint(object):
                     start_lon = float(start_lon) if start_lon is not None else 0
                     apron_lcn = float(apron_lcn) if apron_lcn is not None else 0
                     break
-                # else:
-                #     arcpy.AddError(f"Airfield '{afld_name}' with ObjectID {object_id} not found.")
-                #     return
 
             arcpy.AddMessage(f"Airfield data: Length={apron_length}, Width={apron_width}, Lat={start_lat}, Lon={start_lon}, LCN={apron_lcn}")
 
