@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 import arcpy
 import pandas as pd
 import os
@@ -327,10 +326,7 @@ class CalculateAircraftFootprint(object):
             arcpy.AddError(arcpy.GetMessages())
             arcpy.AddError(traceback.format_exc())
 
-
-
-
-
+# Class for calculating Maximum On Ground (MOG)
 class CalculateMaximumOnGround(object):
     def __init__(self):
         self.label = "Calculate Maximum On Ground"
@@ -477,4 +473,4 @@ class CalculateMaximumOnGround(object):
             arcpy.AddError(f"An error occurred while calculating MOG: {str(e)}")
             arcpy.AddError(arcpy.GetMessages())
 
-
+        return max(parking_available_1, parking_available_2)
