@@ -11,11 +11,12 @@ class Toolbox(object):
         self.alias = "AircraftMOG"
         self.tools = [ImportAircraftData, CalculateAircraftFootprint, CalculateMaximumOnGround]
 
-# Class for importing aircraft data
+
+# Class for importing aircraft data and saving it to GDB if required
 class ImportAircraftData(object):
     def __init__(self):
         self.label = "Import Aircraft Data"
-        self.description = "Import aircraft specifications from a CSV file"
+        self.description = "Import aircraft specifications from a CSV file and optionally save as a GDB table"
 
     def getParameterInfo(self):
         params = [
@@ -26,18 +27,27 @@ class ImportAircraftData(object):
                 parameterType="Required", 
                 direction="Input"),
             arcpy.Parameter(
-                displayName="Output Aircraft Table", 
+                displayName="Output Table (CSV or GDB)", 
                 name="out_table", 
                 datatype="DETable", 
                 parameterType="Required", 
-                direction="Output")
+                direction="Output"),
+            arcpy.Parameter(
+                displayName="Save as Geodatabase Table", 
+                name="save_as_gdb", 
+                datatype="GPBoolean", 
+                parameterType="Optional", 
+                direction="Input")
         ]
         return params
 
     def execute(self, parameters, messages):
         in_csv = parameters[0].valueAsText
         out_table = parameters[1].valueAsText
+        save_as_gdb = parameters[2].value  # Boolean for saving as GDB
+        
         try:
+            # Read CSV data
             if not os.path.exists(in_csv):
                 arcpy.AddError(f"Input CSV file does not exist: {in_csv}")
                 return
@@ -49,18 +59,32 @@ class ImportAircraftData(object):
             for col in numeric_columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
 
+            # Convert the CSV data to a temporary CSV file
             temp_csv = os.path.join(arcpy.env.scratchFolder, "temp.csv")
             df.to_csv(temp_csv, index=False)
+
+            # Check if saving as GDB
+            if save_as_gdb:
+                # Save the table as a GDB table
+                gdb_path = os.path.dirname(out_table)
+                table_name = os.path.basename(out_table)
+                arcpy.conversion.TableToTable(temp_csv, gdb_path, table_name)
+                arcpy.AddMessage(f"Successfully saved as GDB table: {out_table}")
+            else:
+                # Save as a standard table (CSV)
+                arcpy.conversion.TableToTable(temp_csv, os.path.dirname(out_table), os.path.basename(out_table))
+                arcpy.AddMessage(f"Successfully imported aircraft records as CSV table.")
             
-            arcpy.conversion.TableToTable(temp_csv, os.path.dirname(out_table), os.path.basename(out_table))
+            # Clean up
             os.remove(temp_csv)
-            
-            arcpy.AddMessage(f"Successfully imported {len(df)} aircraft records.")
-            arcpy.AddMessage(f"Table imported. Please open {out_table} to view data")
-        
+
         except Exception as e:
             arcpy.AddError(f"An error occurred during import: {str(e)}")
             arcpy.AddError(arcpy.GetMessages())
+
+
+
+
 
 import arcpy
 import os
@@ -69,7 +93,7 @@ import traceback
 class CalculateAircraftFootprint(object):
     def __init__(self):
         self.label = "Create Aircraft Symbol Layer (Aircraft-Shaped Polygons)"
-        self.description = "Create polygon footprints resembling aircraft shapes for a selected aircraft at specified airfield location."
+        self.description = "Create polygon footprints resembling aircraft shapes for a selected aircraft at a specified airfield location."
 
     def getParameterInfo(self):
         params = [
@@ -116,7 +140,7 @@ class CalculateAircraftFootprint(object):
                 parameterType="Required",
                 direction="Input"),
             arcpy.Parameter(
-                displayName="Buffer Distance (in feet)",
+                displayName="Clearance Distance (in feet)",
                 name="buffer_distance",
                 datatype="GPDouble",
                 parameterType="Required",
@@ -130,8 +154,52 @@ class CalculateAircraftFootprint(object):
         ]
         return params
 
+    def updateParameters(self, parameters):
+        # Populate the Aircraft Name dropdown based on the Input Aircraft Table
+        if parameters[0].altered and not parameters[3].altered:
+            aircraft_table = parameters[0].valueAsText
+            if aircraft_table:
+                try:
+                    aircraft_names = set()
+                    with arcpy.da.SearchCursor(aircraft_table, ["MDS"]) as cursor:
+                        for row in cursor:
+                            aircraft_names.add(row[0])
+                    parameters[3].filter.list = sorted(aircraft_names)
+                except Exception as e:
+                    arcpy.AddError(f"Error loading aircraft names: {e}")
+        
+        # Populate the Airfield Name dropdown based on the Airfield Layer
+        if parameters[1].altered and not parameters[5].altered:
+            airfield_layer = parameters[1].valueAsText
+            if airfield_layer:
+                try:
+                    airfield_names = set()
+                    with arcpy.da.SearchCursor(airfield_layer, ["AFLD_NAME"]) as cursor:
+                        for row in cursor:
+                            airfield_names.add(row[0])
+                    parameters[5].filter.list = sorted(airfield_names)
+                except Exception as e:
+                    arcpy.AddError(f"Error loading airfield names: {e}")
+        
+        # Populate the Airfield ObjectID dropdown based on the selected airfield name
+        if parameters[5].altered and not parameters[6].altered:
+            airfield_layer = parameters[1].valueAsText
+            selected_airfield_name = parameters[5].valueAsText
+            if airfield_layer and selected_airfield_name:
+                try:
+                    object_ids = set()
+                    where_clause = f"AFLD_NAME = '{selected_airfield_name}'"
+                    with arcpy.da.SearchCursor(airfield_layer, ["OBJECTID"], where_clause) as cursor:
+                        for row in cursor:
+                            object_ids.add(str(row[0]))  # Convert ObjectID to string for dropdown
+                    parameters[6].filter.list = sorted(object_ids)
+                except Exception as e:
+                    arcpy.AddError(f"Error loading ObjectIDs: {e}")
+        
+        return
+
     def create_aircraft_shape(self, x_start, y_start, length, wingspan):
-        # Define proportions
+        # Define proportions for the aircraft shape
         fuselage_width = length * 0.1
         nose_length = length * 0.2
         tail_length = length * 0.15
@@ -139,21 +207,21 @@ class CalculateAircraftFootprint(object):
         tail_sweep = length * 0.05
 
         corners = [
-            arcpy.Point(x_start, y_start + length/2),  # Nose tip
-            arcpy.Point(x_start - fuselage_width/2, y_start + length/2 - nose_length),  # Nose left
-            arcpy.Point(x_start - wingspan/2, y_start + wing_sweep),  # Left wingtip front
-            arcpy.Point(x_start - wingspan/2, y_start),  # Left wingtip middle
-            arcpy.Point(x_start - wingspan/2, y_start - wing_sweep),  # Left wingtip rear
-            arcpy.Point(x_start - fuselage_width/2, y_start - length/2 + tail_length),  # Fuselage left before tail
-            arcpy.Point(x_start - wingspan/4, y_start - length/2),  # Left tail tip
-            arcpy.Point(x_start, y_start - length/2 - tail_sweep),  # Tail bottom tip
-            arcpy.Point(x_start + wingspan/4, y_start - length/2),  # Right tail tip
-            arcpy.Point(x_start + fuselage_width/2, y_start - length/2 + tail_length),  # Fuselage right before tail
-            arcpy.Point(x_start + wingspan/2, y_start - wing_sweep),  # Right wingtip rear
-            arcpy.Point(x_start + wingspan/2, y_start),  # Right wingtip middle
-            arcpy.Point(x_start + wingspan/2, y_start + wing_sweep),  # Right wingtip front
-            arcpy.Point(x_start + fuselage_width/2, y_start + length/2 - nose_length),  # Nose right
-            arcpy.Point(x_start, y_start + length/2)  # Back to nose tip
+            arcpy.Point(x_start, y_start + length / 2),  # Nose tip
+            arcpy.Point(x_start - fuselage_width / 2, y_start + length / 2 - nose_length),  # Nose left
+            arcpy.Point(x_start - wingspan / 2, y_start + wing_sweep),  # Left wingtip front
+            arcpy.Point(x_start - wingspan / 2, y_start),  # Left wingtip middle
+            arcpy.Point(x_start - wingspan / 2, y_start - wing_sweep),  # Left wingtip rear
+            arcpy.Point(x_start - fuselage_width / 2, y_start - length / 2 + tail_length),  # Fuselage left before tail
+            arcpy.Point(x_start - wingspan / 4, y_start - length / 2),  # Left tail tip
+            arcpy.Point(x_start, y_start - length / 2 - tail_sweep),  # Tail bottom tip
+            arcpy.Point(x_start + wingspan / 4, y_start - length / 2),  # Right tail tip
+            arcpy.Point(x_start + fuselage_width / 2, y_start - length / 2 + tail_length),  # Fuselage right before tail
+            arcpy.Point(x_start + wingspan / 2, y_start - wing_sweep),  # Right wingtip rear
+            arcpy.Point(x_start + wingspan / 2, y_start),  # Right wingtip middle
+            arcpy.Point(x_start + wingspan / 2, y_start + wing_sweep),  # Right wingtip front
+            arcpy.Point(x_start + fuselage_width / 2, y_start + length / 2 - nose_length),  # Nose right
+            arcpy.Point(x_start, y_start + length / 2)  # Back to nose tip
         ]
         return corners
 
@@ -237,7 +305,7 @@ class CalculateAircraftFootprint(object):
                                 polygon = arcpy.Polygon(arcpy.Array(corners), sr)
                                 insert_cursor.insertRow([polygon, mds, length, wingspan, length * wingspan])
                                 points_placed += 1
-                                
+
                                 arcpy.AddMessage(f"Placed {mds} at ({x_start}, {y_start}) - {points_placed}/{quantity_of_aircraft}")
 
                                 # Move to the next column or row
@@ -262,108 +330,147 @@ class CalculateAircraftFootprint(object):
 class CalculateMaximumOnGround(object):
     def __init__(self):
         self.label = "Calculate Maximum On Ground"
-        self.description = "Calculate the maximum number of aircraft that can park on a specific apron"
+        self.description = "Calculate the maximum number of aircraft that can park on a specific apron with specified clearances"
 
     def getParameterInfo(self):
         params = [
             arcpy.Parameter(
-                displayName="Input Aircraft Table", 
-                name="in_table", 
-                datatype="DETable", 
-                parameterType="Required", 
+                displayName="Input Aircraft Table",
+                name="in_table",
+                datatype="DETable",
+                parameterType="Required",
                 direction="Input"),
             arcpy.Parameter(
-                displayName="Airfield Geodatabase", 
-                name="gdb", 
-                datatype="DEWorkspace", 
-                parameterType="Required", 
+                displayName="Airfield Layer",
+                name="airfield_layer",
+                datatype="GPFeatureLayer",
+                parameterType="Required",
                 direction="Input"),
             arcpy.Parameter(
-                displayName="Movement Surface Feature Class", 
-                name="surface_fc", 
-                datatype="GPFeatureLayer", 
-                parameterType="Required", 
+                displayName="Airfield Name",
+                name="airfield_name",
+                datatype="GPString",
+                parameterType="Required",
                 direction="Input"),
             arcpy.Parameter(
-                displayName="Movement Surface OBJECTID", 
-                name="surface_id", 
-                datatype="GPLong", 
-                parameterType="Required", 
-                direction="Input"),
+                displayName="Aircraft Clearance (ft)",
+                name="aircraft_clearance",
+                datatype="GPDouble",
+                parameterType="Required",
+                direction="Input"),  # Clearance around each aircraft
             arcpy.Parameter(
-                displayName="Aircraft MDS", 
-                name="mds", 
-                datatype="GPString", 
-                parameterType="Required", 
-                direction="Input"),
+                displayName="Select Aircraft (MDS)",
+                name="selected_aircraft",
+                datatype="GPString",
+                parameterType="Required",
+                direction="Input",
+                multiValue=True),  # Allow multiple aircraft to be selected
             arcpy.Parameter(
-                displayName="Wingtip Clearance (ft)", 
-                name="wingtip_clearance", 
-                datatype="GPDouble", 
-                parameterType="Required", 
-                direction="Input")
+                displayName="Aircraft Quantities (Comma Separated)",
+                name="aircraft_quantities",
+                datatype="GPString",
+                parameterType="Required",
+                direction="Input")  # Comma-separated values for the quantities
         ]
-        params[2].filter.list = ["Polygon"]
+        params[1].filter.list = ["Polygon"]  # Only allow polygon-type airfield layers
         return params
+
+    def updateParameters(self, parameters):
+        # Populate Airfield Dropdown
+        if parameters[1].altered and not parameters[2].altered:
+            airfield_layer = parameters[1].valueAsText
+            if airfield_layer:
+                airfield_names = [row[0] for row in arcpy.da.SearchCursor(airfield_layer, "AFLD_NAME")]
+                parameters[2].filter.list = sorted(set(airfield_names))
+        
+        # Populate Aircraft Dropdown based on the Input Aircraft Table
+        if parameters[0].altered and not parameters[4].altered:
+            aircraft_table = parameters[0].valueAsText
+            if aircraft_table:
+                try:
+                    # Fetch unique aircraft names (MDS) from the table
+                    aircraft_names = set()
+                    with arcpy.da.SearchCursor(aircraft_table, ["MDS"]) as cursor:
+                        for row in cursor:
+                            aircraft_names.add(row[0])
+                    parameters[4].filter.list = sorted(aircraft_names)  # Populate dropdown with unique MDS
+                except Exception as e:
+                    arcpy.AddError(f"Error loading aircraft names: {e}")
+
+        return
 
     def execute(self, parameters, messages):
         in_table = parameters[0].valueAsText
-        gdb = parameters[1].valueAsText
-        surface_fc = parameters[2].valueAsText
-        surface_id = parameters[3].value
-        mds = parameters[4].valueAsText
-        wingtip_clearance = float(parameters[5].valueAsText)
+        airfield_layer = parameters[1].valueAsText
+        airfield_name = parameters[2].valueAsText
+        aircraft_clearance = float(parameters[3].valueAsText)  # Clearance around each aircraft
+        selected_aircraft = parameters[4].values  # List of selected aircraft MDS
+        aircraft_quantities = parameters[5].valueAsText.split(',')  # Quantities entered as comma-separated values
+
+        # Ensure that the number of aircraft matches the number of quantities
+        if len(selected_aircraft) != len(aircraft_quantities):
+            arcpy.AddError(f"Number of selected aircraft does not match the number of quantities provided.")
+            return
+
+        # Convert aircraft quantities to integers
+        try:
+            aircraft_quantities = [int(q.strip()) for q in aircraft_quantities]
+        except ValueError:
+            arcpy.AddError(f"Invalid input for aircraft quantities. Ensure all quantities are valid integers.")
+            return
 
         try:
-            # Get airfield data
-            airfield_table = os.path.join(gdb, surface_fc)
-            required_fields = ["OBJECTID", "LENGTH", "WIDTH", "LCN"]
-            
-            existing_fields = [f.name for f in arcpy.ListFields(airfield_table)]
-            missing_fields = [f for f in required_fields if f not in existing_fields]
-            if missing_fields:
-                arcpy.AddError(f"Missing required fields in airfield table: {', '.join(missing_fields)}")
-                return
-
-            with arcpy.da.SearchCursor(airfield_table, required_fields, f"OBJECTID = {surface_id}") as cursor:
+            # Get airfield data based on the selected name
+            where_clause = f"AFLD_NAME = '{airfield_name}'"
+            with arcpy.da.SearchCursor(airfield_layer, ["SHAPE@", "LENGTH", "WIDTH"], where_clause) as cursor:
                 for row in cursor:
-                    apron_length, apron_width, lcn = row[1], row[2], row[3]
+                    airfield_shape, apron_length, apron_width = row
                     break
                 else:
-                    arcpy.AddError(f"Movement Surface with OBJECTID {surface_id} not found.")
+                    arcpy.AddError(f"Airfield '{airfield_name}' not found.")
                     return
 
-            # Get aircraft data
-            with arcpy.da.SearchCursor(in_table, ["MDS", "LENGTH", "WING_SPAN", "ACFT_LCN"]) as cursor:
+            arcpy.AddMessage(f"Airfield dimensions: Length={apron_length} ft, Width={apron_width} ft")
+
+            # Calculate available area on the apron
+            available_area = float(apron_length) * float(apron_width)
+
+            # Get selected aircraft data
+            aircraft_data = []
+            with arcpy.da.SearchCursor(in_table, ["MDS", "LENGTH", "WING_SPAN"]) as cursor:
                 for row in cursor:
-                    if row[0] == mds:
-                        aircraft_length, aircraft_wingspan, aircraft_lcn = row[1], row[2], row[3]
-                        break
-                else:
-                    arcpy.AddError(f"Aircraft {mds} not found in the table.")
-                    return
+                    mds, length, wingspan = row
+                    if mds in selected_aircraft:
+                        footprint = float(length) * float(wingspan)
+                        index = selected_aircraft.index(mds)
+                        quantity = aircraft_quantities[index]
+                        aircraft_data.append((mds, length, wingspan, footprint, quantity))
 
-            # Check LCN compatibility
-            if aircraft_lcn > lcn:
-                arcpy.AddWarning(f"Aircraft LCN ({aircraft_lcn}) exceeds apron LCN ({lcn}). Parking may not be suitable.")
+            # Sort aircraft by footprint (largest first)
+            aircraft_data.sort(key=lambda x: x[3], reverse=True)
 
-            # Calculate MOG
-            interior_taxi_width = 30 + aircraft_wingspan + 30
-            peripheral_taxi_width = 50 + aircraft_wingspan / 2 + 37.5
-            mog = self.calculate_mog(apron_length, apron_width, aircraft_length, aircraft_wingspan,
-                                     interior_taxi_width, peripheral_taxi_width, wingtip_clearance)
-            
-            arcpy.AddMessage(f"Maximum On Ground (MOG) for {mds} on selected apron: {mog}")
-        
+            # Calculate MOG (Maximum on Ground)
+            total_area_used = 0
+            results = []
+            for mds, length, wingspan, footprint, quantity in aircraft_data:
+                # Adjust footprint with aircraft clearance
+                clearance_area = (length + aircraft_clearance) * (wingspan + aircraft_clearance)
+                max_fit = math.floor((available_area - total_area_used) / clearance_area)
+                actual_fit = min(max_fit, quantity)
+                total_area_used += actual_fit * clearance_area
+                results.append((mds, actual_fit))
+                arcpy.AddMessage(f"Placed {actual_fit} {mds} aircraft")
+
+            # Display overall results
+            arcpy.AddMessage("\nMaximum On Ground (MOG) Results:")
+            for mds, count in results:
+                arcpy.AddMessage(f"{mds}: {count}")
+
+            arcpy.AddMessage(f"\nTotal area used: {total_area_used:.2f} sq ft")
+            arcpy.AddMessage(f"Remaining area: {available_area - total_area_used:.2f} sq ft")
+
         except Exception as e:
             arcpy.AddError(f"An error occurred while calculating MOG: {str(e)}")
             arcpy.AddError(arcpy.GetMessages())
-
-    def calculate_mog(self, apron_length, apron_width, aircraft_length, aircraft_wingspan,
-                      interior_taxi_width, peripheral_taxi_width, wingtip_clearance):
-        # Calculate the number of aircraft that can be parked on the apron
-        # Based on the formula provided in the pseudocode
-        parking_available_1 = math.floor((apron_length - 2 * interior_taxi_width) / (aircraft_length + wingtip_clearance))
-        parking_available_2 = math.floor((apron_width - 2 * peripheral_taxi_width) / (aircraft_wingspan + wingtip_clearance))
 
         return max(parking_available_1, parking_available_2)
