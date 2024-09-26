@@ -1,16 +1,29 @@
 import arcpy
 import pandas as pd
-import logging
-import heapq
+from sklearn.linear_model import LinearRegression
+import numpy as np
 
-logging.basicConfig(filename='AircraftParkingOptimizer.log', level=logging.INFO)
+# Function to process the aircraft characteristics and apply AI model logic
+def optimize_aircraft_parking(data):
+    # Example AI model: Simple linear regression for demonstration purposes
+    X = data[['WING_SPAN', 'LENGTH']].values  # Input features
+    y = data['TURNING_RADIUS'].values  # Target variable (adjust as needed)
+
+    # Fit the linear regression model
+    model = LinearRegression()
+    model.fit(X, y)
+
+    # Use the model to predict optimized parking (dummy logic, replace as needed)
+    data['OptimizedParking'] = model.predict(X)
+    
+    return data
 
 class Toolbox(object):
     def __init__(self):
         """Define the toolbox (the name of the toolbox is the name of the .pyt file)."""
         self.label = "Aircraft Parking Optimizer"
         self.alias = "MOG Optimization"
-
+    
     def getParameterInfo(self):
         """Define parameter definitions"""
         param0 = arcpy.Parameter(
@@ -29,45 +42,6 @@ class Toolbox(object):
         
         params = [param0, param1]
         return params
-    
-    def optimize_aircraft_parking(aircraft_data, parking_spaces, constraints):
-        # Sort using a heap to reduce time complexity
-        aircraft_data = heapq.nlargest(len(aircraft_data), aircraft_data, key=lambda x: x.size)
-        parking_spaces = heapq.nlargest(parking_spaces, key=lambda x: x.available_aera)
-
-        # Initialize result list
-        parking_plan = []
-
-        # Greedy placement of aircraft
-        for aircraft in aircraft_data:
-            for parking_space in parking_spaces:
-                if can_place_aircraft(aircraft, parking_space, constraints):
-                    # Assign aircraft to parking space
-                    parking_plan.append((aircraft.id, space.id))
-                    # Mark parking space as occupied
-                    occupy_space(space, aircraft)
-                    break
-        return parking_plan
-    
-    def meets_constraints(aircraft, parking_space, constraints):
-        # Check if aircraft meets constraints
-        return all(constraint(aircraft, parking_space) for constraint in constraints)
-    
-    def update_constraints(aircraft, parking_space):
-        # Update constraints based on aircraft and parking space
-        for other_space in parking_space.adjacent_spaces:
-            other_space.available_area -= aircraft.size
-
-    def can_place_aircraft(aircraft, parking_space, constraints):
-        # Check if aircraft can be placed in 
-        # parking space
-        return (aircraft.space <= parking_space.available_area) and meets_constraints(aircraft, parking_space, constraints)
-    
-    def occupy_parking_space(parking_space, aircraft):
-        # Update parking space area
-        parking_space.available_area -= aircraft.size
-        # Update adjacent parking spaces
-        update_constraints(aircraft, parking_space)
 
     def execute(self, parameters, messages):
         """The source code of the tool."""
@@ -78,22 +52,40 @@ class Toolbox(object):
         output_file = parameters[1].valueAsText  # Path to output file
         
         # Load the data using pandas
+        messages.addMessage("Loading aircraft data...")
         aircraft_data = pd.read_csv(input_file)
         
-        # Print progress update to user
-        messages.addMessage("Loading aircraft data...")
-        
-        # Run the optimization logic
-        optimized_data = optimize_aircraft_parking(aircraft_data)
+        # Preprocess aircraft data if necessary (e.g., clean data, format adjustments)
+        messages.addMessage("Preprocessing aircraft data...")
 
-        # Print progress update to user
-        messages.addMessage("Running optimization algorithm...")
+        # Run the optimization logic
+        messages.addMessage("Running aircraft parking optimization using AI model...")
+        optimized_data = optimize_aircraft_parking(aircraft_data)
+        
+        # Post-process optimized data if necessary (e.g., format it for output)
+        messages.addMessage("Post-processing optimized data...")
         
         # Save the optimized data to output location
         optimized_data.to_csv(output_file, index=False)
+        
+        messages.addMessage(f"Optimization completed! Results saved to {output_file}.")
 
         # Print progress update to user
         messages.addMessage("Saving optimized data...")
-
         # Log completion message
         logging.info(f"Optimization completed! Results saved to {output_file}.")
+
+if __name__ == "__main__":
+    # For standalone testing (outside ArcGIS environment)
+    input_file = "ACFT_Characteristics(ACFT Characteristics).csv"  # Replace this path if necessary
+    aircraft_data = pd.read_csv(input_file)
+    
+    # Perform optimization using the AI logic
+    optimized_data = optimize_aircraft_parking(aircraft_data)
+    
+    # Save the optimized data back to CSV (or Excel)
+    output_file = "Optimized_Aircraft_Parking.csv"  # Adjust if needed
+    optimized_data.to_csv(output_file, index=False)
+    
+    # Notify the user that the optimization process is completed
+    print(f"Optimization completed! Results saved to {output_file}.")
