@@ -134,17 +134,18 @@ class CalculateAircraftFootprint(object):
                 parameterType="Required",
                 direction="Input"),
             arcpy.Parameter(
-                displayName="Maximum Aircraft per Row",
-                name="max_per_row",
-                datatype="GPLong",
-                parameterType="Required",
-                direction="Input"),
-            arcpy.Parameter(
                 displayName="Output Feature Class",
                 name="out_fc",
                 datatype="DEFeatureClass",
                 parameterType="Required",
                 direction="Output")
+            # arcpy.Parameter(
+            #     displayName="Maximum Aircraft per Row",
+            #     name="max_per_row",
+            #     datatype="GPLong",
+            #     parameterType="Required",
+            #     direction="Input"),
+
         ]
 
         params[2].parameterDependencies = [params[1].name]
@@ -204,8 +205,8 @@ class CalculateAircraftFootprint(object):
         selected_aircraft = parameters[3].valueAsText
         quantity_of_aircraft = int(parameters[4].valueAsText)
         buffer_distance = float(parameters[5].valueAsText)
-        max_per_row = int(parameters[6].valueAsText)
-        out_fc = parameters[7].valueAsText
+        out_fc = parameters[6].valueAsText
+        #max_per_row = int(parameters[7].valueAsText)
 
         try:
             # Validate and create output feature class
@@ -244,10 +245,10 @@ class CalculateAircraftFootprint(object):
                         aircraft_lcn = float(aircraft_lcn) if aircraft_lcn is not None else 0
 
                         if length == 0 or wingspan == 0 or aircraft_lcn == 0:
-                            arcpy.AddError(f"Invalid data for {mds}: LENGTH={length}, WING_SPAN={wingspan}, ACFT_LCN={aircraft_lcn}")
+                            arcpy.AddError(f"Invalid data for {mds}: LENGTH = {length}, WING_SPAN = {wingspan}, ACFT_LCN = {aircraft_lcn}")
                             return
 
-                        arcpy.AddMessage(f"Processing aircraft {mds}: Length={length}, Wingspan={wingspan}, LCN={aircraft_lcn}")
+                        arcpy.AddMessage(f"Processing aircraft {mds}: Length = {length}, Wingspan = {wingspan}, LCN = {aircraft_lcn}")
 
                         if aircraft_lcn > apron_lcn:
                             arcpy.AddWarning(f"Aircraft {mds} LCN ({aircraft_lcn}) exceeds apron LCN ({apron_lcn}). Placement may not be suitable.")
@@ -255,13 +256,28 @@ class CalculateAircraftFootprint(object):
                         length_in_degrees = length / 364000  # Approximate conversion from feet to degrees latitude
                         wingspan_in_degrees = wingspan / 364000
 
+                        max_per_row = int(apron_width / (wingspan + buffer_distance))
+                        max_rows = int(apron_length / (length + buffer_distance))
+
+                        arcpy.AddMessage(f"Calculated maximum per row: {max_per_row}, and maximum rows: {max_rows}")
+
+                        # Calculate the total width and height of the aircraft layout
+                        total_width = max_per_row * (wingspan_in_degrees + buffer_distance / 364000)
+                        total_height = max_rows * (length_in_degrees + buffer_distance / 364000)
+
+                        arcpy.AddMessage(f"Width taken by aircrafts: {total_width}, and height: {total_height}")
+
+                        # Calculate the offset to center the layout
+                        x_offset = total_width / 2
+                        #y_offset = total_height / 2
+
                         with arcpy.da.InsertCursor(out_fc, ["SHAPE@", "MDS", "LENGTH", "WINGSPAN", "Aircraft_Footprint"]) as insert_cursor:
                             points_placed = 0
                             row_index = 0
                             col_index = 0
 
                             while points_placed < quantity_of_aircraft:
-                                x_start = start_lon + (col_index * (wingspan_in_degrees + buffer_distance / 364000))
+                                x_start = start_lon - x_offset + (col_index * (wingspan_in_degrees + buffer_distance / 364000))
                                 y_start = start_lat + (row_index * (length_in_degrees + buffer_distance / 364000))
 
                                 # Create the aircraft shape
@@ -271,7 +287,7 @@ class CalculateAircraftFootprint(object):
                                 polygon = arcpy.Polygon(arcpy.Array(corners), sr)
                                 insert_cursor.insertRow([polygon, mds, length, wingspan, length * wingspan])
                                 points_placed += 1
-                                
+
                                 arcpy.AddMessage(f"Placed {mds} at ({x_start}, {y_start}) - {points_placed}/{quantity_of_aircraft}")
 
                                 # Move to the next column or row
