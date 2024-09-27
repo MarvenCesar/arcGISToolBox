@@ -269,7 +269,7 @@ class CalculateAircraftFootprint(object):
 
                         # Calculate the offset to center the layout
                         x_offset = total_width / 2
-                        #y_offset = total_height / 2
+                        #y_offset = total_height / 2 # Y offset not needed - already corrected for in previous code
 
                         with arcpy.da.InsertCursor(out_fc, ["SHAPE@", "MDS", "LENGTH", "WINGSPAN", "Aircraft_Footprint"]) as insert_cursor:
                             points_placed = 0
@@ -277,6 +277,7 @@ class CalculateAircraftFootprint(object):
                             col_index = 0
 
                             while points_placed < quantity_of_aircraft:
+                                # Offset added for the x_start to center the layout
                                 x_start = start_lon - x_offset + (col_index * (wingspan_in_degrees + buffer_distance / 364000))
                                 y_start = start_lat + (row_index * (length_in_degrees + buffer_distance / 364000))
 
