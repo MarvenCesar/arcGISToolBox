@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 import arcpy
 import pandas as pd
 import os
@@ -326,9 +325,9 @@ class CalculateAircraftFootprint(object):
             arcpy.AddError(f"An error occurred while creating the polygons: {str(e)}")
             arcpy.AddError(arcpy.GetMessages())
             arcpy.AddError(traceback.format_exc())
+            
 
-
-
+# Class for calculating Maximum On Ground (MOG)
 class CalculateMaximumOnGround(object):
     def __init__(self):
         self.label = "Calculate Maximum On Ground"
@@ -447,6 +446,7 @@ class CalculateMaximumOnGround(object):
 
             # Get selected aircraft data
             aircraft_data = []
+            
             with arcpy.da.SearchCursor(in_table, ["MDS", "LENGTH", "WING_SPAN", "ACFT_LCN"]) as cursor:
                 for row in cursor:
                     mds, length, wingspan, aircraft_lcn = row
@@ -459,6 +459,7 @@ class CalculateMaximumOnGround(object):
                         if apply_lcn and float(aircraft_lcn) > float(apron_lcn):
                             arcpy.AddWarning(f"Aircraft {mds} LCN ({aircraft_lcn}) exceeds apron LCN ({apron_lcn}). Skipping")
                             continue
+
                         aircraft_data.append((mds, length, wingspan, footprint, quantity))
 
             # Sort aircraft by footprint (largest first)
@@ -488,6 +489,4 @@ class CalculateMaximumOnGround(object):
             arcpy.AddError(f"An error occurred while calculating MOG: {str(e)}")
             arcpy.AddError(arcpy.GetMessages())
 
-
-
-
+        return max(parking_available_1, parking_available_2)
