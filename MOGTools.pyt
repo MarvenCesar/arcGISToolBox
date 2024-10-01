@@ -325,12 +325,13 @@ class CalculateAircraftFootprint(object):
             arcpy.AddError(f"An error occurred while creating the polygons: {str(e)}")
             arcpy.AddError(arcpy.GetMessages())
             arcpy.AddError(traceback.format_exc())
+            
 
 # Class for calculating Maximum On Ground (MOG)
 class CalculateMaximumOnGround(object):
     def __init__(self):
         self.label = "Calculate Maximum On Ground"
-        self.description = "Calculate the maximum number of aircraft that can park on a specific apron with specified clearances"
+        self.description = "Calculate the maximum number of aircraft that can park on a specific apron with specified clearances and optional constraints (LCN compatibility)."
 
     def getParameterInfo(self):
         params = [
@@ -370,7 +371,13 @@ class CalculateMaximumOnGround(object):
                 name="aircraft_quantities",
                 datatype="GPString",
                 parameterType="Required",
-                direction="Input")  # Comma-separated values for the quantities
+                direction="Input"),  # Comma-separated values for the quantities
+            arcpy.Parameter(
+                displayName="Apply LCN Compatibility?",
+                name="apply_lcn",
+                datatype="GPBoolean",
+                parameterType="Optional",
+                direction="Input")
         ]
         params[1].filter.list = ["Polygon"]  # Only allow polygon-type airfield layers
         return params
@@ -406,6 +413,7 @@ class CalculateMaximumOnGround(object):
         aircraft_clearance = float(parameters[3].valueAsText)  # Clearance around each aircraft
         selected_aircraft = parameters[4].values  # List of selected aircraft MDS
         aircraft_quantities = parameters[5].valueAsText.split(',')  # Quantities entered as comma-separated values
+        apply_lcn = parameters[6].value  # Whether to apply LCN compatibility constraint
 
         # Ensure that the number of aircraft matches the number of quantities
         if len(selected_aircraft) != len(aircraft_quantities):
@@ -422,28 +430,36 @@ class CalculateMaximumOnGround(object):
         try:
             # Get airfield data based on the selected name
             where_clause = f"AFLD_NAME = '{airfield_name}'"
-            with arcpy.da.SearchCursor(airfield_layer, ["SHAPE@", "LENGTH", "WIDTH"], where_clause) as cursor:
+            with arcpy.da.SearchCursor(airfield_layer, ["SHAPE@", "LENGTH", "WIDTH", "LCN"], where_clause) as cursor:
                 for row in cursor:
-                    airfield_shape, apron_length, apron_width = row
+                    airfield_shape, apron_length, apron_width, apron_lcn = row
                     break
                 else:
                     arcpy.AddError(f"Airfield '{airfield_name}' not found.")
                     return
 
             arcpy.AddMessage(f"Airfield dimensions: Length={apron_length} ft, Width={apron_width} ft")
+            arcpy.AddMessage(f"Airfield LCN: {apron_lcn}")
 
             # Calculate available area on the apron
             available_area = float(apron_length) * float(apron_width)
 
             # Get selected aircraft data
             aircraft_data = []
-            with arcpy.da.SearchCursor(in_table, ["MDS", "LENGTH", "WING_SPAN"]) as cursor:
+            
+            with arcpy.da.SearchCursor(in_table, ["MDS", "LENGTH", "WING_SPAN", "ACFT_LCN"]) as cursor:
                 for row in cursor:
-                    mds, length, wingspan = row
+                    mds, length, wingspan, aircraft_lcn = row
                     if mds in selected_aircraft:
                         footprint = float(length) * float(wingspan)
                         index = selected_aircraft.index(mds)
                         quantity = aircraft_quantities[index]
+
+                        # Check LCN compatibility if the constraint is applied
+                        if apply_lcn and float(aircraft_lcn) > float(apron_lcn):
+                            arcpy.AddWarning(f"Aircraft {mds} LCN ({aircraft_lcn}) exceeds apron LCN ({apron_lcn}). Skipping")
+                            continue
+
                         aircraft_data.append((mds, length, wingspan, footprint, quantity))
 
             # Sort aircraft by footprint (largest first)
