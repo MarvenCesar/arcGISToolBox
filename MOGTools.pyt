@@ -3,7 +3,7 @@ import pandas as pd
 import os
 import math
 import traceback
-
+import random
 
 class Toolbox(object):
     def __init__(self):
@@ -83,12 +83,6 @@ class ImportAircraftData(object):
             arcpy.AddError(arcpy.GetMessages())
 
 
-
-
-
-import arcpy
-import os
-import traceback
 
 class CalculateAircraftFootprint(object):
     def __init__(self):
@@ -327,11 +321,14 @@ class CalculateAircraftFootprint(object):
             arcpy.AddError(traceback.format_exc())
             
 
-# Class for calculating Maximum On Ground (MOG)
+
 class CalculateMaximumOnGround(object):
     def __init__(self):
         self.label = "Calculate Maximum On Ground"
-        self.description = "Calculate the maximum number of aircraft that can park on a specific apron with specified clearances and optional constraints (LCN compatibility)."
+        self.description = "Calculates the maximum number of aircraft that can be parked on an airfield."
+        self.canRunInBackground = False
+        self.optimization_attempts = 20
+        self.aircraft_data = None  # Add this line
 
     def getParameterInfo(self):
         params = [
@@ -354,139 +351,308 @@ class CalculateMaximumOnGround(object):
                 parameterType="Required",
                 direction="Input"),
             arcpy.Parameter(
-                displayName="Aircraft Clearance (ft)",
-                name="aircraft_clearance",
+                displayName="Interior Taxiway Width (ft)",
+                name="interior_taxi_width",
                 datatype="GPDouble",
                 parameterType="Required",
-                direction="Input"),  # Clearance around each aircraft
+                direction="Input"),
+            arcpy.Parameter(
+                displayName="Peripheral Taxiway Width (ft)",
+                name="peripheral_taxi_width",
+                datatype="GPDouble",
+                parameterType="Required",
+                direction="Input"),
+            arcpy.Parameter(
+                displayName="Aircraft Wingtip Clearance (ft)",
+                name="wingtip_clearance",
+                datatype="GPDouble",
+                parameterType="Required",
+                direction="Input"),
             arcpy.Parameter(
                 displayName="Select Aircraft (MDS)",
                 name="selected_aircraft",
                 datatype="GPString",
                 parameterType="Required",
                 direction="Input",
-                multiValue=True),  # Allow multiple aircraft to be selected
+                multiValue=True),
             arcpy.Parameter(
                 displayName="Aircraft Quantities (Comma Separated)",
                 name="aircraft_quantities",
                 datatype="GPString",
-                parameterType="Required",
-                direction="Input"),  # Comma-separated values for the quantities
+                parameterType="Optional",
+                direction="Input"),
             arcpy.Parameter(
                 displayName="Apply LCN Compatibility?",
                 name="apply_lcn",
                 datatype="GPBoolean",
                 parameterType="Optional",
-                direction="Input")
+                direction="Input"),
+            arcpy.Parameter(
+                displayName="Optimize Quantities",
+                name="optimize_quantities",
+                datatype="GPBoolean",
+                parameterType="Optional",
+                direction="Input"),
+            arcpy.Parameter(
+                displayName="Minimum Aircraft Quantities (Comma Separated)",
+                name="min_quantities",
+                datatype="GPString",
+                parameterType="Optional",
+                direction="Input",
+                enabled=False),
+            arcpy.Parameter(
+                displayName="Number of Optimization Attempts",
+                name="optimization_attempts",
+                datatype="GPLong",
+                parameterType="Optional",
+                direction="Input",
+                enabled=False),
         ]
-        params[1].filter.list = ["Polygon"]  # Only allow polygon-type airfield layers
+        params[1].filter.list = ["Polygon"]
+        params[9].value = False  # Default to not optimizing
+        params[11].value = self.optimization_attempts  # Use class attribute for default
         return params
 
     def updateParameters(self, parameters):
-        # Populate Airfield Dropdown
         if parameters[1].altered and not parameters[2].altered:
             airfield_layer = parameters[1].valueAsText
             if airfield_layer:
                 airfield_names = [row[0] for row in arcpy.da.SearchCursor(airfield_layer, "AFLD_NAME")]
                 parameters[2].filter.list = sorted(set(airfield_names))
         
-        # Populate Aircraft Dropdown based on the Input Aircraft Table
-        if parameters[0].altered and not parameters[4].altered:
+        if parameters[0].altered and not parameters[6].altered:
             aircraft_table = parameters[0].valueAsText
             if aircraft_table:
                 try:
-                    # Fetch unique aircraft names (MDS) from the table
-                    aircraft_names = set()
-                    with arcpy.da.SearchCursor(aircraft_table, ["MDS"]) as cursor:
-                        for row in cursor:
-                            aircraft_names.add(row[0])
-                    parameters[4].filter.list = sorted(aircraft_names)  # Populate dropdown with unique MDS
+                    aircraft_names = set(row[0] for row in arcpy.da.SearchCursor(aircraft_table, ["MDS"]))
+                    parameters[6].filter.list = sorted(aircraft_names)
                 except Exception as e:
-                    arcpy.AddError(f"Error loading aircraft names: {e}")
+                    arcpy.AddError(f"Error loading aircraft names: {str(e)}")
+        
+        optimize_quantities_param = parameters[9]
+        min_aircraft_quantities_param = parameters[10]
+        optimization_attempts_param = parameters[11]
 
-        return
+        optimize_quantities_param.value = False if optimize_quantities_param.value is None else optimize_quantities_param.value
+        min_aircraft_quantities_param.enabled = optimize_quantities_param.value
+        optimization_attempts_param.enabled = optimize_quantities_param.value
 
     def execute(self, parameters, messages):
-        in_table = parameters[0].valueAsText
+        # Extract parameter values
+        aircraft_table = parameters[0].valueAsText
         airfield_layer = parameters[1].valueAsText
         airfield_name = parameters[2].valueAsText
-        aircraft_clearance = float(parameters[3].valueAsText)  # Clearance around each aircraft
-        selected_aircraft = parameters[4].values  # List of selected aircraft MDS
-        aircraft_quantities = parameters[5].valueAsText.split(',')  # Quantities entered as comma-separated values
-        apply_lcn = parameters[6].value  # Whether to apply LCN compatibility constraint
+        interior_taxi_width = float(parameters[3].value)
+        peripheral_taxi_width = float(parameters[4].value)
+        wingtip_clearance = float(parameters[5].value)
+        selected_aircraft = parameters[6].valueAsText.split(';')
+        aircraft_quantities = parameters[7].valueAsText
+        apply_lcn = parameters[8].value
+        optimize_quantities = parameters[9].value
+        min_quantities = parameters[10].valueAsText
+        self.optimization_attempts = int(parameters[11].value) if optimize_quantities else 1
 
-        # Ensure that the number of aircraft matches the number of quantities
-        if len(selected_aircraft) != len(aircraft_quantities):
-            arcpy.AddError(f"Number of selected aircraft does not match the number of quantities provided.")
-            return
+        # Get airfield data
+        apron_length, apron_width = self.get_airfield_data(airfield_layer, airfield_name)
 
-        # Convert aircraft quantities to integers
-        try:
-            aircraft_quantities = [int(q.strip()) for q in aircraft_quantities]
-        except ValueError:
-            arcpy.AddError(f"Invalid input for aircraft quantities. Ensure all quantities are valid integers.")
-            return
+        # Get aircraft data
+        self.aircraft_data = self.get_aircraft_data(aircraft_table, selected_aircraft, aircraft_quantities, min_quantities)
 
-        try:
-            # Get airfield data based on the selected name
-            where_clause = f"AFLD_NAME = '{airfield_name}'"
-            with arcpy.da.SearchCursor(airfield_layer, ["SHAPE@", "LENGTH", "WIDTH", "LCN"], where_clause) as cursor:
-                for row in cursor:
-                    airfield_shape, apron_length, apron_width, apron_lcn = row
-                    break
-                else:
-                    arcpy.AddError(f"Airfield '{airfield_name}' not found.")
-                    return
+        # Calculate MOG
+        result = self.calculate_mog(self.aircraft_data, apron_length, apron_width, 
+                                    interior_taxi_width, peripheral_taxi_width, 
+                                    wingtip_clearance, optimize_quantities)
 
-            arcpy.AddMessage(f"Airfield dimensions: Length={apron_length} ft, Width={apron_width} ft")
-            arcpy.AddMessage(f"Airfield LCN: {apron_lcn}")
+        # Display results
+        self.display_results(result, apron_length, apron_width, 
+                             interior_taxi_width, peripheral_taxi_width, wingtip_clearance)
 
-            # Calculate available area on the apron
-            available_area = float(apron_length) * float(apron_width)
+    def get_airfield_data(self, airfield_layer, airfield_name):
+        with arcpy.da.SearchCursor(airfield_layer, ["LENGTH", "WIDTH"], f"AFLD_NAME = '{airfield_name}'") as cursor:
+            for row in cursor:
+                return float(row[0]), float(row[1])
+        arcpy.AddError(f"Airfield '{airfield_name}' not found.")
+        return None, None
 
-            # Get selected aircraft data
-            aircraft_data = []
+    def get_aircraft_data(self, aircraft_table, selected_aircraft, quantities, min_quantities):
+        aircraft_data = []
+        mds_field, length_field, wingspan_field = "MDS", "LENGTH", "WING_SPAN"
+
+        with arcpy.da.SearchCursor(aircraft_table, [mds_field, length_field, wingspan_field]) as cursor:
+            for row in cursor:
+                if row[0] in selected_aircraft:
+                    mds, length, wingspan = row
+                    qty = int(quantities.split(',')[selected_aircraft.index(mds)]) if quantities else 0
+                    min_qty = int(min_quantities.split(',')[selected_aircraft.index(mds)]) if min_quantities else 0
+                    aircraft_data.append((mds, length, wingspan, qty, min_qty))
+        
+        arcpy.AddMessage("Selected Aircraft Dimensions:")
+        for ac in aircraft_data:
+            arcpy.AddMessage(f"{ac[0]}: Length = {ac[1]:.2f} ft, Wingspan = {ac[2]:.2f} ft")
+        
+        return aircraft_data
+
+    def calculate_mog(self, aircraft_data, apron_length, apron_width, 
+                      interior_taxi_width, peripheral_taxi_width, 
+                      wingtip_clearance, optimize_quantities):
+        usable_length = apron_length - 2 * peripheral_taxi_width
+        usable_width = apron_width - 2 * peripheral_taxi_width
+
+        arcpy.AddMessage(f"\nTotal airfield dimensions: {apron_length:.2f} x {apron_width:.2f} ft")
+        arcpy.AddMessage(f"Usable parking area: {usable_length:.2f} x {usable_width:.2f} ft")
+        arcpy.AddMessage(f"Interior taxiway width: {interior_taxi_width:.2f} ft")
+        arcpy.AddMessage(f"Peripheral taxiway width: {peripheral_taxi_width:.2f} ft")
+        arcpy.AddMessage(f"Wingtip clearance: {wingtip_clearance:.2f} ft")
+
+        if optimize_quantities:
+            arcpy.AddMessage("\nUsing optimized placement algorithm")
+            return self.optimize_placement(aircraft_data, usable_length, usable_width, 
+                                           interior_taxi_width, wingtip_clearance)
+        else:
+            arcpy.AddMessage("\nUsing fixed placement algorithm")
+            return self.fixed_placement(aircraft_data, usable_length, usable_width, 
+                                        interior_taxi_width, wingtip_clearance)
+
+    def optimize_placement(self, aircraft_data, usable_length, usable_width, 
+                           interior_taxi_width, wingtip_clearance):
+        arcpy.AddMessage(f"\nAvailable parking area: {usable_length:.2f} x {usable_width:.2f} ft")
+        best_solution = None
+        best_score = float('-inf')
+
+        for attempt in range(self.optimization_attempts):
+            arcpy.AddMessage(f"\nOptimization attempt {attempt + 1}/{self.optimization_attempts}")
             
-            with arcpy.da.SearchCursor(in_table, ["MDS", "LENGTH", "WING_SPAN", "ACFT_LCN"]) as cursor:
-                for row in cursor:
-                    mds, length, wingspan, aircraft_lcn = row
-                    if mds in selected_aircraft:
-                        footprint = float(length) * float(wingspan)
-                        index = selected_aircraft.index(mds)
-                        quantity = aircraft_quantities[index]
+            solution = []
+            remaining_space = [(0, 0, usable_length, usable_width)]
+            aircraft_counts = {ac[0]: 0 for ac in aircraft_data}
 
-                        # Check LCN compatibility if the constraint is applied
-                        if apply_lcn and float(aircraft_lcn) > float(apron_lcn):
-                            arcpy.AddWarning(f"Aircraft {mds} LCN ({aircraft_lcn}) exceeds apron LCN ({apron_lcn}). Skipping")
-                            continue
+            while True:
+                placed_aircraft = self.place_next_aircraft(aircraft_data, remaining_space, 
+                                                           interior_taxi_width, wingtip_clearance, 
+                                                           aircraft_counts)
+                if not placed_aircraft:
+                    break
+                solution.append(placed_aircraft)
+                aircraft_counts[placed_aircraft[0]] += 1
 
-                        aircraft_data.append((mds, length, wingspan, footprint, quantity))
+            score = self.calculate_score(aircraft_counts, aircraft_data)
+            if score > best_score:
+                best_solution = aircraft_counts
+                best_score = score
 
-            # Sort aircraft by footprint (largest first)
-            aircraft_data.sort(key=lambda x: x[3], reverse=True)
+            arcpy.AddMessage("After placement:")
+            for mds, count in aircraft_counts.items():
+                min_qty = next(ac[4] for ac in aircraft_data if ac[0] == mds)
+                arcpy.AddMessage(f"Placed {count} {mds} aircraft (minimum required: {min_qty})")
 
-            # Calculate MOG (Maximum on Ground)
-            total_area_used = 0
-            results = []
-            for mds, length, wingspan, footprint, quantity in aircraft_data:
-                # Adjust footprint with aircraft clearance
-                clearance_area = (length + aircraft_clearance) * (wingspan + aircraft_clearance)
-                max_fit = math.floor((available_area - total_area_used) / clearance_area)
-                actual_fit = min(max_fit, quantity)
-                total_area_used += actual_fit * clearance_area
-                results.append((mds, actual_fit))
-                arcpy.AddMessage(f"Placed {actual_fit} {mds} aircraft")
+        arcpy.AddMessage(f"\nBest optimization result: {best_solution}")
+        return list(best_solution.items())
 
-            # Display overall results
-            arcpy.AddMessage("\nMaximum On Ground (MOG) Results:")
-            for mds, count in results:
-                arcpy.AddMessage(f"{mds}: {count}")
+    def place_next_aircraft(self, aircraft_data, remaining_space, 
+                            interior_taxi_width, wingtip_clearance, current_counts):
+        # Prioritize aircraft types that haven't met their minimum quantities
+        unmet_aircraft = [ac for ac in aircraft_data if current_counts[ac[0]] < ac[4]]
+        if unmet_aircraft:
+            aircraft_to_place = random.choice(unmet_aircraft)
+        else:
+            aircraft_to_place = random.choice(aircraft_data)
 
-            arcpy.AddMessage(f"\nTotal area used: {total_area_used:.2f} sq ft")
-            arcpy.AddMessage(f"Remaining area: {available_area - total_area_used:.2f} sq ft")
+        mds, length, wingspan, _, _ = aircraft_to_place
+        for i, (x, y, w, h) in enumerate(remaining_space):
+            if w >= length + wingtip_clearance and h >= wingspan + wingtip_clearance:
+                # Place aircraft
+                new_spaces = [
+                    (x + length + wingtip_clearance, y, w - length - wingtip_clearance, h),
+                    (x, y + wingspan + wingtip_clearance, length + wingtip_clearance, h - wingspan - wingtip_clearance)
+                ]
+                remaining_space[i:i+1] = [s for s in new_spaces if s[2] > 0 and s[3] > 0]
+                remaining_space.sort(key=lambda s: s[2] * s[3], reverse=True)
+                return aircraft_to_place
 
-        except Exception as e:
-            arcpy.AddError(f"An error occurred while calculating MOG: {str(e)}")
-            arcpy.AddError(arcpy.GetMessages())
+        return None
 
-        return max(parking_available_1, parking_available_2)
+    def calculate_score(self, aircraft_counts, aircraft_data):
+        total_aircraft = sum(aircraft_counts.values())
+        min_requirements_met = all(aircraft_counts[ac[0]] >= ac[4] for ac in aircraft_data)
+        return total_aircraft + (1000 if min_requirements_met else 0)
+
+    def fixed_placement(self, aircraft_data, usable_length, usable_width, 
+                        interior_taxi_width, wingtip_clearance):
+        arcpy.AddMessage(f"\nAvailable parking area: {usable_length:.2f} x {usable_width:.2f} ft")
+        aircraft_counts = {}
+        remaining_space = [(0, 0, usable_length, usable_width)]
+
+        # Sort aircraft by area (length * wingspan) in descending order
+        sorted_aircraft = sorted(aircraft_data, key=lambda ac: ac[1] * ac[2], reverse=True)
+
+        for aircraft in sorted_aircraft:
+            mds, length, wingspan, qty, _ = aircraft
+            placed = 0
+
+            while placed < qty and remaining_space:
+                best_space = max(remaining_space, key=lambda s: s[2] * s[3])
+                x, y, w, h = best_space
+
+                # Try both orientations
+                if w >= length + wingtip_clearance and h >= wingspan + wingtip_clearance:
+                    orientation = "normal"
+                elif w >= wingspan + wingtip_clearance and h >= length + wingtip_clearance:
+                    orientation = "rotated"
+                    length, wingspan = wingspan, length
+                else:
+                    break  # Can't fit any more of this aircraft type
+
+                # Place aircraft
+                placed += 1
+                aircraft_counts[mds] = aircraft_counts.get(mds, 0) + 1
+
+                # Update remaining space
+                remaining_space.remove(best_space)
+                new_spaces = [
+                    (x + length + wingtip_clearance, y, w - length - wingtip_clearance, h),
+                    (x, y + wingspan + wingtip_clearance, length + wingtip_clearance, h - wingspan - wingtip_clearance)
+                ]
+                remaining_space.extend([s for s in new_spaces if s[2] > 0 and s[3] > 0])
+
+            arcpy.AddMessage(f"Placed {placed} {mds} aircraft (out of {qty} requested)")
+            arcpy.AddMessage(f"  Orientation: {orientation}")
+
+        return list(aircraft_counts.items())
+
+    def display_results(self, result, apron_length, apron_width, 
+                        interior_taxi_width, peripheral_taxi_width, wingtip_clearance):
+        arcpy.AddMessage("\nMaximum On Ground (MOG) Results:")
+        total_aircraft = 0
+        total_area = 0
+        for mds, count in result:
+            arcpy.AddMessage(f"{mds}: {count}")
+            total_aircraft += count
+            aircraft_data = next((ac for ac in self.aircraft_data if ac[0] == mds), None)
+            if aircraft_data:
+                total_area += count * aircraft_data[1] * aircraft_data[2]
+
+        arcpy.AddMessage(f"\nTotal aircraft placed: {total_aircraft}")
+        
+        estimated_rows = math.ceil(total_aircraft / 3)  # Assuming 3 columns, adjust as needed
+        arcpy.AddMessage(f"Estimated rows: {estimated_rows}")
+
+        arcpy.AddMessage(f"Airfield dimensions: {apron_length} x {apron_width} ft")
+        total_area_sq_ft = apron_length * apron_width
+        arcpy.AddMessage(f"Total airfield area: {total_area_sq_ft:.2f} sq ft")
+
+        arcpy.AddMessage(f"Area occupied by aircraft: {total_area:.2f} sq ft")
+        
+        taxiway_area = (2 * peripheral_taxi_width * apron_width) + (interior_taxi_width * apron_length)
+        arcpy.AddMessage(f"Area used for taxiways: {taxiway_area:.2f} sq ft")
+
+        total_used_area = total_area + taxiway_area
+        arcpy.AddMessage(f"Total used area: {total_used_area:.2f} sq ft")
+
+        remaining_area = total_area_sq_ft - total_used_area
+        arcpy.AddMessage(f"Remaining area: {remaining_area:.2f} sq ft")
+
+        remaining_percentage = (remaining_area / total_area_sq_ft) * 100
+        arcpy.AddMessage(f"Remaining space: {remaining_percentage:.2f}% of total airfield area")
+
+        utilization_efficiency = ((total_used_area / total_area_sq_ft) * 100)
+        arcpy.AddMessage(f"Space utilization efficiency: {utilization_efficiency:.2f}%")
