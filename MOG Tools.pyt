@@ -14,82 +14,6 @@ class Toolbox(object):
                       CalculateMaximumOnGround
                       ]
 
-# Class for importing aircraft data
-# Commented out due to being obsolete function. Code remains for reference.
-
-# class ImportAircraftData(object):
-#     def __init__(self):
-#         self.label = "Import Aircraft Data"
-#         self.description = "Import aircraft specifications from a CSV file"
-
-#     def getParameterInfo(self):
-#         in_table = arcpy.Parameter(
-#             displayName="Select Table from Project", 
-#             name="in_table", 
-#             datatype="GPTableView", 
-#             parameterType="Required", 
-#             direction="Input")
-        
-#         selected_columns = arcpy.Parameter(
-#             displayName="Select Columns", 
-#             name="selected_columns", 
-#             datatype="GPString", 
-#             parameterType="Required", 
-#             direction="Input", 
-#             multiValue=True)
-        
-#         out_table = arcpy.Parameter(
-#             displayName="Output Aircraft Table", 
-#             name="out_table", 
-#             datatype="DETable", 
-#             parameterType="Required", 
-#             direction="Output")
-
-#         selected_columns.parameterDependencies = [in_table.name]
-#         selected_columns.filter.type = "ValueList"
-
-#         return [in_table, selected_columns, out_table]
-
-#     def updateParameters(self, parameters):
-#         in_table = parameters[0]
-#         selected_columns = parameters[1]
-
-#         if in_table.altered and not in_table.hasBeenValidated:
-#             # Get the list of columns from the table in the project
-#             if in_table.valueAsText:
-#                 fields = arcpy.ListFields(in_table.valueAsText)
-#                 columns = [field.name for field in fields]
-#                 selected_columns.filter.list = columns
-#                 if not selected_columns.value:
-#                     selected_columns.value = columns
-#         return
-
-#     def execute(self, parameters, messages):
-#         in_table = parameters[0].valueAsText
-#         selected_columns = parameters[1].values
-#         out_table = parameters[2].valueAsText
-
-#         try:
-#             # Create an output table to store the selected columns and their data
-#             arcpy.CreateTable_management(os.path.dirname(out_table), os.path.basename(out_table))
-            
-#             # Add fields to the output table based on the selected columns
-#             for column in selected_columns:
-#                 arcpy.AddField_management(out_table, column, "TEXT")
-
-#             # Insert data into the output table
-#             with arcpy.da.SearchCursor(in_table, selected_columns) as cursor:
-#                 with arcpy.da.InsertCursor(out_table, selected_columns) as insert_cursor:
-#                     for row in cursor:
-#                         insert_cursor.insertRow(row)
-
-#             arcpy.AddMessage(f"Data from {in_table} has been successfully imported to {out_table}.")
-
-#         except Exception as e:
-#             arcpy.AddError(f"An error occurred while processing the table: {str(e)}")
-#             arcpy.AddError(arcpy.GetMessages())
-#             arcpy.AddError(traceback.format_exc())
-
 class CalculateAircraftFootprint(object):
     def __init__(self):
         self.label = "Create Aircraft Symbol Layer (Aircraft-Shaped Polygons)"
@@ -139,13 +63,6 @@ class CalculateAircraftFootprint(object):
                 datatype="DEFeatureClass",
                 parameterType="Required",
                 direction="Output")
-            # arcpy.Parameter(
-            #     displayName="Maximum Aircraft per Row",
-            #     name="max_per_row",
-            #     datatype="GPLong",
-            #     parameterType="Required",
-            #     direction="Input"),
-
         ]
 
         params[2].parameterDependencies = [params[1].name]
@@ -170,7 +87,7 @@ class CalculateAircraftFootprint(object):
                     arcpy.AddError(f"An error occurred while retrieving OBJECTIDs: {str(e)}")
         return
 
-    def create_aircraft_shape(self, x_start, y_start, length, wingspan):
+    def create_aircraft_shape(self, x_start, y_start, length, wingspan, angle):
         # Define proportions
         fuselage_width = length * 0.1
         nose_length = length * 0.2
@@ -195,6 +112,20 @@ class CalculateAircraftFootprint(object):
             arcpy.Point(x_start + fuselage_width/2, y_start + length/2 - nose_length),  # Nose right
             arcpy.Point(x_start, y_start + length/2)  # Back to nose tip
         ]
+
+        # Rotate the aircraft shape based on the angle
+        angle_rad = math.radians(angle)
+        cos_angle = math.cos(angle_rad)
+        sin_angle = math.sin(angle_rad)
+
+        # rotated_corners = []
+        # for corner in corners:
+        #     x_shifted = corner.X - x_start
+        #     y_shifted = corner.Y - y_start
+        #     x_rotated = x_shifted * cos_angle - y_shifted * sin_angle
+        #     y_rotated = x_shifted * sin_angle + y_shifted * cos_angle
+        #     rotated_corners.append(arcpy.Point(x_start + x_rotated, y_start + y_rotated))
+
         return corners
 
     def execute(self, parameters, messages):
@@ -206,7 +137,6 @@ class CalculateAircraftFootprint(object):
         quantity_of_aircraft = int(parameters[4].valueAsText)
         buffer_distance = float(parameters[5].valueAsText)
         out_fc = parameters[6].valueAsText
-        #max_per_row = int(parameters[7].valueAsText)
 
         try:
             # Validate and create output feature class
@@ -220,20 +150,33 @@ class CalculateAircraftFootprint(object):
             arcpy.AddField_management(out_fc, "MDS", "TEXT")
             arcpy.AddField_management(out_fc, "LENGTH", "DOUBLE")
             arcpy.AddField_management(out_fc, "WINGSPAN", "DOUBLE")
-            arcpy.AddField_management(out_fc, "Aircraft_Footprint", "DOUBLE")
+            arcpy.AddField_management(out_fc, "FOOTPRINT", "DOUBLE")
+
+            # Check if column with shape angles exists in the airfield layer
+
+            if "SHAPE_ANGLE" not in [columns.name for columns in arcpy.ListFields(airfield_layer)]:
+                arcpy.AddField_management(airfield_layer, "SHAPE_ANGLE", "DOUBLE")
+                arcpy.AddMessage("Field 'SHAPE_ANGLE' added to the input table.")
+            else:
+                arcpy.AddMessage("Field 'SHAPE_ANGLE' already exists in the input table.")
+
+                            
+            # Calculate the angle of the selected object of the airfield
+            arcpy.CalculatePolygonMainAngle_cartography(airfield_layer, "SHAPE_ANGLE", "GEOGRAPHIC")
 
             # Get the airfield data (location and size)
-            with arcpy.da.SearchCursor(airfield_layer, ["SHAPE@", "LENGTH", "WIDTH", "LATITUDE", "LONGITUDE", "LCN"], f"OBJECTID = {object_id}") as cursor:
-                for row in cursor:
-                    airfield_shape, apron_length, apron_width, start_lat, start_lon, apron_lcn = row
+            with arcpy.da.SearchCursor(airfield_layer, ["LENGTH", "WIDTH", "SHAPE_ANGLE", "LATITUDE", "LONGITUDE", "LCN"], f"OBJECTID = {object_id}") as search_cursor:
+                for row in search_cursor:
+                    apron_length, apron_width, apron_angle, start_lat, start_lon, apron_lcn = row
                     apron_length = float(apron_length) if apron_length is not None else 0
                     apron_width = float(apron_width) if apron_width is not None else 0
+                    apron_angle = float(apron_angle) if apron_angle is not None else 0
                     start_lat = float(start_lat) if start_lat is not None else 0
                     start_lon = float(start_lon) if start_lon is not None else 0
                     apron_lcn = float(apron_lcn) if apron_lcn is not None else 0
                     break
 
-            arcpy.AddMessage(f"Airfield data: Length={apron_length}, Width={apron_width}, Lat={start_lat}, Lon={start_lon}, LCN={apron_lcn}")
+            arcpy.AddMessage(f"Airfield data: Length = {apron_length}, Width = {apron_width}, Angle = {apron_angle}, Lat = {start_lat}, Lon = {start_lon}, LCN = {apron_lcn}")
 
             # Process the selected aircraft
             with arcpy.da.SearchCursor(in_table, ["MDS", "LENGTH", "WING_SPAN", "ACFT_LCN"]) as search_cursor:
@@ -269,23 +212,22 @@ class CalculateAircraftFootprint(object):
 
                         # Calculate the offset to center the layout
                         x_offset = total_width / 2
-                        #y_offset = total_height / 2 # Y offset not needed - already corrected for in previous code
+                        #y_offset = total_height / 2
 
-                        with arcpy.da.InsertCursor(out_fc, ["SHAPE@", "MDS", "LENGTH", "WINGSPAN", "Aircraft_Footprint"]) as insert_cursor:
+                        with arcpy.da.InsertCursor(out_fc, ["SHAPE@", "MDS", "LENGTH", "WINGSPAN", "FOOTPRINT"]) as insert_cursor:
                             points_placed = 0
                             row_index = 0
                             col_index = 0
 
                             while points_placed < quantity_of_aircraft:
-                                # Offset added for the x_start to center the layout
                                 x_start = start_lon - x_offset + (col_index * (wingspan_in_degrees + buffer_distance / 364000))
                                 y_start = start_lat + (row_index * (length_in_degrees + buffer_distance / 364000))
 
                                 # Create the aircraft shape
-                                corners = self.create_aircraft_shape(x_start, y_start, length_in_degrees, wingspan_in_degrees)
+                                aircraft_shapes = self.create_aircraft_shape(x_start, y_start, length_in_degrees, wingspan_in_degrees, apron_angle)
 
                                 # Create the polygon
-                                polygon = arcpy.Polygon(arcpy.Array(corners), sr)
+                                polygon = arcpy.Polygon(arcpy.Array(aircraft_shapes), sr)
                                 insert_cursor.insertRow([polygon, mds, length, wingspan, length * wingspan])
                                 points_placed += 1
 
