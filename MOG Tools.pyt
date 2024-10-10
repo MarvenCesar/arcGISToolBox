@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import random
 import arcpy
 import pandas as pd
 import os
@@ -30,7 +31,7 @@ class CalculateAircraftFootprint(object):
             arcpy.Parameter(
                 displayName="Input Airfield Layer",
                 name="airfield_layer",
-                datatype="GPLayer",
+                datatype="GPFeatureLayer",
                 parameterType="Required",
                 direction="Input"),
             arcpy.Parameter(
@@ -264,7 +265,7 @@ class CalculateMaximumOnGround(object):
             arcpy.Parameter(
                 displayName="Input Aircraft Table",
                 name="in_table",
-                datatype="DETable",
+                datatype="GPTableView",
                 parameterType="Required",
                 direction="Input"),
             arcpy.Parameter(
