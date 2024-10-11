@@ -1,91 +1,74 @@
-import arcpy
 import pandas as pd
 from sklearn.linear_model import LinearRegression
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error, r2_score
 import numpy as np
+import joblib
 
 # Function to process the aircraft characteristics and apply AI model logic
-def optimize_aircraft_parking(data):
-    # Example AI model: Simple linear regression for demonstration purposes
+def optimize_aircraft_parking(data, model):
+    # Prompt the user to enter the quantity of each aircraft
+    quantities = []
+    for i, row in data.iterrows():
+        aircraft_type = f"Aircraft {i+1} (Wing Span: {row['WING_SPAN']}, Length: {row['LENGTH']})"
+        quantity = int(input(f"Enter the quantity of {aircraft_type}: "))
+        quantities.append(quantity)
+
+    # Add the quantities to the data frame
+    data['Quantity'] = quantities
+
+    # Use the trained model to predict optimized parking
     X = data[['WING_SPAN', 'LENGTH']].values  # Input features
-    y = data['TURNING_RADIUS'].values  # Target variable (adjust as needed)
+    predictions = model.predict(X)
 
-    # Fit the linear regression model
-    model = LinearRegression()
-    model.fit(X, y)
+    # Adjust predictions based on quantity
+    data['OptimizedParking'] = predictions * data['Quantity']
 
-    # Use the model to predict optimized parking (dummy logic, replace as needed)
-    data['OptimizedParking'] = model.predict(X)
-    
     return data
 
-class Toolbox(object):
-    def __init__(self):
-        """Define the toolbox (the name of the toolbox is the name of the .pyt file)."""
-        self.label = "Aircraft Parking Optimizer"
-        self.alias = "MOG Optimization"
-    
-    def getParameterInfo(self):
-        """Define parameter definitions"""
-        param0 = arcpy.Parameter(
-            displayName="Input Aircraft Data",
-            name="aircraft_data",
-            datatype="DETable",
-            parameterType="Required",
-            direction="Input")
-        
-        param1 = arcpy.Parameter(
-            displayName="Output Optimized Data",
-            name="output_optimized_data",
-            datatype="DETable",
-            parameterType="Required",
-            direction="Output")
-        
-        params = [param0, param1]
-        return params
+def train_model(data):
+    # Define input features and target variable
+    X = data[['WING_SPAN', 'LENGTH']].values  # Input features
+    y = data['MIN_TWY_WIDTH'].values # Target variable
 
-    def execute(self, parameters, messages):
-        """The source code of the tool."""
-        # Initiate logging
-        logging.info("Starting Aircraft Parking Optimizer tool...")
+    # Split the data into training and testing sets
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-        input_file = parameters[0].valueAsText  # Path to input file from ArcGIS
-        output_file = parameters[1].valueAsText  # Path to output file
-        
-        # Load the data using pandas
-        messages.addMessage("Loading aircraft data...")
-        aircraft_data = pd.read_csv(input_file)
-        
-        # Preprocess aircraft data if necessary (e.g., clean data, format adjustments)
-        messages.addMessage("Preprocessing aircraft data...")
+    # Initialize the linear regression model
+    model = LinearRegression()
 
-        # Run the optimization logic
-        messages.addMessage("Running aircraft parking optimization using AI model...")
-        optimized_data = optimize_aircraft_parking(aircraft_data)
-        
-        # Post-process optimized data if necessary (e.g., format it for output)
-        messages.addMessage("Post-processing optimized data...")
-        
-        # Save the optimized data to output location
-        optimized_data.to_csv(output_file, index=False)
-        
-        messages.addMessage(f"Optimization completed! Results saved to {output_file}.")
+    # Train the model
+    model.fit(X_train, y_train)
 
-        # Print progress update to user
-        messages.addMessage("Saving optimized data...")
-        # Log completion message
-        logging.info(f"Optimization completed! Results saved to {output_file}.")
+    # Evalueate the model
+    y_pred = model.predict(X_test)
+    mse = mean_squared_error(y_test, y_pred)
+    r2 = r2_score(y_test, y_pred)
+
+    print(f"Model Training Completed. MSE: {mse}, R^2: {r2}")
+
+    # Save the trained model to a file
+    joblib.dump(model, "aircraft_parking_model.pkl")
+
+    return model
 
 if __name__ == "__main__":
-    # For standalone testing (outside ArcGIS environment)
-    input_file = "ACFT_Characteristics(ACFT Characteristics).csv"  # Replace this path if necessary
+    # Load the aircraft characteristics from the CSV file
+    input_file = "ACFT_Characteristics(ACFT Characteristics).csv"
     aircraft_data = pd.read_csv(input_file)
-    
-    # Perform optimization using the AI logic
-    optimized_data = optimize_aircraft_parking(aircraft_data)
-    
-    # Save the optimized data back to CSV (or Excel)
-    output_file = "Optimized_Aircraft_Parking.csv"  # Adjust if needed
+
+    # Train the model with the dataset
+    model = train_model(aircraft_data)
+
+    # Load the trained model
+    model = joblib.load("aircraft_parking_model.pkl")
+
+    # Perform optimization on the aircraft data using the AI logic
+    optimized_data = optimize_aircraft_parking(aircraft_data, model)
+
+    # Save the optimized data to a new CSV file
+    output_file = "Optimized_Aircraft_Parking.csv"
     optimized_data.to_csv(output_file, index=False)
-    
-    # Notify the user that the optimization process is completed
+
+    # Print completion message
     print(f"Optimization completed! Results saved to {output_file}.")
