@@ -100,7 +100,6 @@ class CalculateMaximumOnGround(object):
         ]
         params[1].filter.list = ["Polygon"]
         params[5].parameterDependencies = [params[0].name]
-        params[5].filter.type = "ValueList"
         params[8].value = False  # Default to not optimizing
         params[10].value = 20  # Use class attribute for default
         return params
@@ -110,12 +109,8 @@ class CalculateMaximumOnGround(object):
         if parameters[0].altered:
             aircraft_table = parameters[0].valueAsText
             if aircraft_table:
-                aircraft_names = []
-                with arcpy.da.SearchCursor(aircraft_table, "MDS") as cursor:
-                    for row in cursor:
-                        if row[0]:
-                            aircraft_names.append(row[0])
-                            parameters[5].filter.list = aircraft_names
+                aircraft_names = [row[0] for row in arcpy.da.SearchCursor(aircraft_table, "MDS") if row[0]] # Check if row[0] is valid and not <Null>. If <null>, filter.list breaks
+                parameters[5].filter.list = aircraft_names
     
         optimize_quantities_param = parameters[8]
         min_aircraft_quantities_param = parameters[9]
@@ -165,9 +160,31 @@ class CalculateMaximumOnGround(object):
         self.create_aircraft_layer(airfield_layer_object, aircraft_data, result, out_fc, wingtip_clearance, interior_taxi_width)
 
     def get_airfield_data(self, airfield_layer_object):
-        with arcpy.da.SearchCursor(airfield_layer_object, ["LENGTH", "WIDTH", "LCN"]) as cursor:
+        with arcpy.da.SearchCursor(airfield_layer_object, ["LENGTH", "WIDTH", "LCN", "OID@", "SHAPE@"]) as cursor:
             for row in cursor:
+
+                # Print the current polygon or polyline's ID
+                arcpy.AddMessage("Feature {}:".format(row[3]))
+                partnum = 0
+
+                # Step through each part of the feature
+                for part in row[4]:
+                    # Print the part number
+                    arcpy.AddMessage("Part {}:".format(partnum))
+
+                    # Step through each vertex in the feature
+                    for pnt in part:
+                        if pnt:
+                            # Print x,y coordinates of current point
+                            arcpy.AddMessage("{}, {}".format(pnt.X, pnt.Y))
+                        else:
+                            # If pnt is None, this represents an interior ring
+                            arcpy.AddMessage("Interior Ring:")
+
+                    partnum += 1
+
                 return float(row[0]), float(row[1]), float(row[2])
+            
         arcpy.AddError(f"Object '{airfield_layer_object}' not found.")
         return None, None, None
 
@@ -238,7 +255,7 @@ class CalculateMaximumOnGround(object):
         return max(max_normal, max_rotated)
 
     def calculate_layout(self, count, length, wingspan, usable_length, usable_width,
-                         interior_taxi_width, wingtip_clearance):
+                        interior_taxi_width, wingtip_clearance):
         normal_rows = self.calculate_num_rows(usable_width, wingspan, wingtip_clearance, interior_taxi_width)
         normal_per_row = self.calculate_aircraft_per_row(usable_length, length)
         normal_total = normal_rows * normal_per_row
@@ -246,6 +263,9 @@ class CalculateMaximumOnGround(object):
         rotated_rows = self.calculate_num_rows(usable_width, length, wingtip_clearance, interior_taxi_width)
         rotated_per_row = self.calculate_aircraft_per_row(usable_length, wingspan)
         rotated_total = rotated_rows * rotated_per_row
+
+        arcpy.AddMessage(f"Normal Layout: Rows = {normal_rows}, Per Row = {normal_per_row}, Total = {normal_total}")
+        arcpy.AddMessage(f"Rotated Layout: Rows = {rotated_rows}, Per Row = {rotated_per_row}, Total = {rotated_total}")
 
         if rotated_total > normal_total:
             return rotated_rows, rotated_per_row, "rotated"
@@ -409,10 +429,6 @@ class CalculateMaximumOnGround(object):
     def mutate(self, individual, mutation_rate, min_counts):
         return [max(min_count, gene + random.randint(-1, 1)) if random.random() < mutation_rate else gene 
                 for gene, min_count in zip(individual, min_counts)]
-    
-    # --------------------------------------------------------------------------
-
-    # Code below is copied from commmented function above and modified to fit the new function
 
     def create_aircraft_layer(self, airfield_layer_object, aircraft_data, mog_result, out_fc, wingtip_clearance, interior_taxi_width):
 
