@@ -35,63 +35,69 @@ class CalculateMaximumOnGround(object):
                 parameterType="Required",
                 direction="Input"),
             arcpy.Parameter( # 2
+                displayName="Origin Point",
+                name="origin_point",
+                datatype="GPString",
+                parameterType="Optional",
+                direction="Input"),
+            arcpy.Parameter( # 3
                 displayName="Interior Taxiway Width (ft)",
                 name="interior_taxi_width",
                 datatype="GPDouble",
                 parameterType="Required",
                 direction="Input"),
-            arcpy.Parameter( # 3
+            arcpy.Parameter( # 4
                 displayName="Peripheral Taxiway Width (ft)",
                 name="peripheral_taxi_width",
                 datatype="GPDouble",
                 parameterType="Required",
                 direction="Input"),
-            arcpy.Parameter( # 4
+            arcpy.Parameter( # 5
                 displayName="Aircraft Wingtip Clearance (ft)",
                 name="wingtip_clearance",
                 datatype="GPDouble",
                 parameterType="Required",
                 direction="Input"),
-            arcpy.Parameter( # 5
+            arcpy.Parameter( # 6
                 displayName="Select Aircraft (MDS)",
                 name="selected_aircraft",
                 datatype="GPString",
                 parameterType="Required",
                 direction="Input",
                 multiValue=True),
-            arcpy.Parameter( # 6
+            arcpy.Parameter( # 7
                 displayName="Aircraft Quantities (Comma Separated)",
                 name="aircraft_quantities",
                 datatype="GPString",
                 parameterType="Optional",
                 direction="Input"),
-            arcpy.Parameter( # 7
+            arcpy.Parameter( # 8
                 displayName="Apply LCN Compatibility?",
                 name="apply_lcn",
                 datatype="GPBoolean",
                 parameterType="Optional",
                 direction="Input"),
-            arcpy.Parameter( # 8
+            arcpy.Parameter( # 9
                 displayName="Optimize Quantities",
                 name="optimize_quantities",
                 datatype="GPBoolean",
                 parameterType="Optional",
                 direction="Input"),
-            arcpy.Parameter( # 9
+            arcpy.Parameter( # 10
                 displayName="Minimum Aircraft Quantities (Comma Separated)",
                 name="min_quantities",
                 datatype="GPString",
                 parameterType="Optional",
                 direction="Input",
                 enabled=False),
-            arcpy.Parameter( # 10
+            arcpy.Parameter( # 11
                 displayName="Number of Optimization Attempts",
                 name="optimization_attempts",
                 datatype="GPLong",
                 parameterType="Optional",
                 direction="Input",
                 enabled=False),
-            arcpy.Parameter( # 11
+            arcpy.Parameter( # 12
                 displayName="Output Feature Class",
                 name="out_fc",
                 datatype="DEFeatureClass",
@@ -99,9 +105,10 @@ class CalculateMaximumOnGround(object):
                 direction="Output")
         ]
         params[1].filter.list = ["Polygon"]
-        params[5].parameterDependencies = [params[0].name]
-        params[8].value = False  # Default to not optimizing
-        params[10].value = 20  # Use class attribute for default
+        params[2].parameterDependencies = [params[1].name]
+        params[6].parameterDependencies = [params[0].name]
+        params[9].value = False  # Default to not optimizing
+        params[11].value = 20  # Use class attribute for default
         return params
 
     def updateParameters(self, parameters):
@@ -110,11 +117,49 @@ class CalculateMaximumOnGround(object):
             aircraft_table = parameters[0].valueAsText
             if aircraft_table:
                 aircraft_names = [row[0] for row in arcpy.da.SearchCursor(aircraft_table, "MDS") if row[0]] # Check if row[0] is valid and not <Null>. If <null>, filter.list breaks
-                parameters[5].filter.list = aircraft_names
+                parameters[6].filter.list = aircraft_names
+        
+        if parameters[1].altered:
+            airfield_layer_object = parameters[1].value
+            airfield_layer_object_name = parameters[1].valueAsText
+            if airfield_layer_object:
+                # Check if the original airfield_layer_object has more than 4 vertices
+                vertex_count = 0
+                with arcpy.da.SearchCursor(airfield_layer_object, ["SHAPE@"]) as cursor:
+                    for row in cursor:
+                        for part in row[0]:
+                            vertex_count += len(part)
+
+                if vertex_count > 4:
+                    # Create a copy of the airfield_layer_object as a new feature class
+                    workspace = os.path.dirname(arcpy.Describe(airfield_layer_object).catalogPath)
+                    valid_name = arcpy.ValidateTableName(airfield_layer_object_name + "_generalized", workspace)
+                    airfield_layer_object_generalized = os.path.join(workspace, valid_name)
+                    sr = arcpy.Describe(airfield_layer_object).spatialReference
+                    arcpy.management.CreateFeatureclass(workspace, valid_name, "POLYGON", spatial_reference=sr)
+
+                    # Copy all data from the original to the new feature class
+                    arcpy.management.CopyFeatures(airfield_layer_object, airfield_layer_object_generalized)
+
+                    # Generalize the copied feature class
+                    arcpy.edit.Generalize(airfield_layer_object_generalized, "10 Feet")
+                else:
+                    airfield_layer_object_generalized = airfield_layer_object
+
+                # Proceed with gathering the points from the generalized feature class
+                points_list = []
+                for polygon in arcpy.da.SearchCursor(airfield_layer_object_generalized, ["SHAPE@"]):
+                    for part in polygon[0].getPart():
+                        for point in part:
+                            if point:
+                                points_list.append(f"X: {point.X}, Y: {point.Y}")
+
+
+                parameters[2].filter.list = list(points_list)
     
-        optimize_quantities_param = parameters[8]
-        min_aircraft_quantities_param = parameters[9]
-        optimization_attempts_param = parameters[10]
+        optimize_quantities_param = parameters[9]
+        min_aircraft_quantities_param = parameters[10]
+        optimization_attempts_param = parameters[11]
 
         optimize_quantities_param.value = False if optimize_quantities_param.value is None else optimize_quantities_param.value
         min_aircraft_quantities_param.enabled = optimize_quantities_param.value
@@ -124,20 +169,23 @@ class CalculateMaximumOnGround(object):
         # Extract parameter values
         aircraft_table = parameters[0].valueAsText
         airfield_layer_object = parameters[1].value # added to work for the airfield layer generation
-        interior_taxi_width = float(parameters[2].value)
-        peripheral_taxi_width = float(parameters[3].value)
-        wingtip_clearance = float(parameters[4].value)
-        selected_aircraft = parameters[5].valueAsText
-        aircraft_quantities = parameters[6].valueAsText
-        apply_lcn = parameters[7].value
-        optimize_quantities = parameters[8].value
-        min_quantities = parameters[9].valueAsText
 
-        out_fc = parameters[11].valueAsText
+        airfield_layer_object_origin = parameters[2].valueAsText
+
+        interior_taxi_width = float(parameters[3].value)
+        peripheral_taxi_width = float(parameters[4].value)
+        wingtip_clearance = float(parameters[5].value)
+        selected_aircraft = parameters[6].valueAsText
+        aircraft_quantities = parameters[7].valueAsText
+        apply_lcn = parameters[8].value
+        optimize_quantities = parameters[9].value
+        min_quantities = parameters[10].valueAsText
+
+        out_fc = parameters[12].valueAsText
 
         # Process min_quantities
-        if parameters[9].value:  # Assuming min_quantities is the 11th parameter
-            min_quantities = parameters[10].valueAsText
+        if parameters[10].value:  # Assuming min_quantities is the 11th parameter
+            min_quantities = parameters[11].valueAsText
         else:
             min_quantities = ','.join(['1'] * len(selected_aircraft))  # Default to 1 for each aircraft type
 
@@ -160,26 +208,52 @@ class CalculateMaximumOnGround(object):
         self.create_aircraft_layer(airfield_layer_object, aircraft_data, result, out_fc, wingtip_clearance, interior_taxi_width)
 
     def get_airfield_data(self, airfield_layer_object):
+        
         with arcpy.da.SearchCursor(airfield_layer_object, ["LENGTH", "WIDTH", "LCN", "OID@", "SHAPE@"]) as cursor:
             for row in cursor:
-
                 # Print the current polygon or polyline's ID
-                arcpy.AddMessage("Feature {}:".format(row[3]))
-                partnum = 0
+                arcpy.AddMessage(f"Feature {row[3]}:")
 
                 # Step through each part of the feature
                 for part in row[4]:
-                    # Print the part number
-                    arcpy.AddMessage("Part {}:".format(partnum))
 
-                    # Step through each vertex in the feature
+                    # # Check if the part has more than 4 vertices
+                    # if len(part) > 4:
+
+                    #     arcpy.AddMessage("More than 4 points detected. Generalizing the airfield layer object...")
+                    #     # Copy the original feature class
+                    #     airfield_layer_object_generalized = airfield_layer_object
+                    #     arcpy.management.CopyFeatures(airfield_layer_object, airfield_layer_object_generalized)
+
+                    #     # Generalize the copied feature class
+                    #     arcpy.edit.Generalize(airfield_layer_object_generalized, "10 Feet")
+
+                    #     with arcpy.da.SearchCursor(airfield_layer_object_generalized, ["SHAPE@"]) as gen_cursor:
+                    #         for gen_row in gen_cursor:
+
+                    #             partnum = 0
+
+                    #             # Print the generalized part's points
+                    #             for gen_part in gen_row[0]:
+                    #                 for gen_pnt in gen_part:
+                    #                     if gen_pnt:
+                    #                         arcpy.AddMessage("Generalized Point {}: {}, {}".format(gen_part.index(gen_pnt), gen_pnt.X, gen_pnt.Y))
+                    #                     else:
+                    #                         arcpy.AddMessage("Interior Ring:")
+
+                    #         partnum += 1
+                    # else:
+                    partnum = 0
+                    pointnum = 0
+                    # Print the part number
+                    arcpy.AddMessage(f"Part {partnum}:")
+                    # Print the part's points
                     for pnt in part:
                         if pnt:
-                            # Print x,y coordinates of current point
-                            arcpy.AddMessage("{}, {}".format(pnt.X, pnt.Y))
+                            arcpy.AddMessage(f"Point {pointnum}: {pnt.X}, {pnt.Y}")
                         else:
-                            # If pnt is None, this represents an interior ring
                             arcpy.AddMessage("Interior Ring:")
+                        pointnum += 1
 
                     partnum += 1
 
@@ -438,25 +512,25 @@ class CalculateMaximumOnGround(object):
             valid_name = arcpy.ValidateTableName(os.path.basename(out_fc), workspace)
             out_fc = os.path.join(workspace, valid_name)
             sr = arcpy.Describe(airfield_layer_object).spatialReference
-            arcpy.CreateFeatureclass_management(workspace, valid_name, "POLYGON", spatial_reference = sr)
+            arcpy.management.CreateFeatureclass(workspace, valid_name, "POLYGON", spatial_reference = sr)
 
             # Add fields for aircraft properties
-            arcpy.AddField_management(out_fc, "MDS", "TEXT")
-            arcpy.AddField_management(out_fc, "LENGTH", "DOUBLE")
-            arcpy.AddField_management(out_fc, "WINGSPAN", "DOUBLE")
-            arcpy.AddField_management(out_fc, "FOOTPRINT", "DOUBLE")
+            arcpy.management.AddField(out_fc, "MDS", "TEXT")
+            arcpy.management.AddField(out_fc, "LENGTH", "DOUBLE")
+            arcpy.management.AddField(out_fc, "WINGSPAN", "DOUBLE")
+            arcpy.management.AddField(out_fc, "FOOTPRINT", "DOUBLE")
 
             # Check if column with shape angles exists in the airfield layer
 
             if "SHAPE_ANGLE" not in [columns.name for columns in arcpy.ListFields(airfield_layer_object)]:
-                arcpy.AddField_management(airfield_layer_object, "SHAPE_ANGLE", "DOUBLE")
+                arcpy.management.AddField(airfield_layer_object, "SHAPE_ANGLE", "DOUBLE")
                 arcpy.AddMessage("Field 'SHAPE_ANGLE' added to the input table.")
             else:
                 arcpy.AddMessage("Field 'SHAPE_ANGLE' already exists in the input table.")
 
                             
             # Calculate the angle of the selected object of the airfield
-            arcpy.CalculatePolygonMainAngle_cartography(airfield_layer_object, "SHAPE_ANGLE", "GEOGRAPHIC")
+            arcpy.cartography.CalculatePolygonMainAngle(airfield_layer_object, "SHAPE_ANGLE", "GEOGRAPHIC")
 
             # Get the airfield data (location and size)
             with arcpy.da.SearchCursor(airfield_layer_object, ["LENGTH", "WIDTH", "SHAPE_ANGLE", "LATITUDE", "LONGITUDE", "LCN"]) as search_cursor:
