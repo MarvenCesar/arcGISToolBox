@@ -150,9 +150,13 @@ class CalculateMaximumOnGround(object):
                 points_list = []
                 for polygon in arcpy.da.SearchCursor(airfield_layer_object_generalized, ["SHAPE@"]):
                     for part in polygon[0].getPart():
+                        i_point = 0
                         for point in part:
                             if point:
-                                points_list.append(f"X: {point.X}, Y: {point.Y}")
+                                i_point += 1
+                                points_list.append(f"{i_point}: X: {point.X},\tY: {point.Y}")
+                            else:
+                                break # Break is needed to ensure no inner rings
 
 
                 parameters[2].filter.list = list(points_list)
