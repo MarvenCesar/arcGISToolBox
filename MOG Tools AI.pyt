@@ -1,138 +1,260 @@
-from ortools.sat.python import cp_model
-
-# CSP model for aircraft parking
-class AircraftParkingCSP:
-    def __init__(self, aircraft_list, parking_spots, constraints):
-        self.aircraft_list = aircraft_list
-        self.parking_spots = parking_spots
-        self.constraints = constraints
-
-    def solve(self):
-        model = cp_model.CpModel()
-
-        # Variables: Assign parking spots to aircraft
-        assignments = {}
-        for aircraft in self.aircraft_list:
-            assignments[aircraft] = model.NewIntVar(0, len(self.parking_spots) - 1, f'parking_spot_{aircraft}')
-
-        # Constraints: Apply constraints for wingtip clearance, taxi lanes, etc.
-        for i, aircraft1 in enumerate(self.aircraft_list):
-            for j, aircraft2 in enumerate(self.aircraft_list):
-                if i != j:
-                    # Ensure no overlap between aircraft based on wingtip clearance
-                    model.Add(abs(assignments[aircraft1] - assignments[aircraft2]) >= self.constraints['clearance'])
-
-        # Objective: Maximize the number of aircraft parked
-        model.Maximize(sum(assignments.values()))
-
-        # Solve the model
-        solver = cp_model.CpSolver()
-        status = solver.Solve(model)
-
-        if status == cp_model.OPTIMAL:
-            parking_plan = {}
-            for aircraft in self.aircraft_list:
-                parking_plan[aircraft] = solver.Value(assignments[aircraft])
-            return parking_plan
-        else:
-            return None
-        
-import gym
-import numpy as np
-
-class AirfieldParkingEnv(gym.Env):
-    def __init__(self, aircraft_list, parking_spots, initial_state):
-        self.aircraft_list = aircraft_list
-        self.parking_spots = parking_spots
-        self.state = initial_state
-        self.action_space = gym.spaces.Discrete(len(parking_spots))
-        self.observation_space = gym.spaces.Box(0, len(parking_spots), shape=(len(aircraft_list),), dtype=np.int)
-
-    def reset(self):
-        self.state = np.zeros(len(self.aircraft_list), dtype=np.int)  # Start with all aircraft unparked
-        return self.state
-
-    def step(self, action):
-        # Assign a parking spot to an aircraft
-        aircraft_index, parking_spot = action
-        reward = 0
-
-        # Check if the parking spot is valid (clearance, etc.)
-        if self.is_valid_parking(aircraft_index, parking_spot):
-            self.state[aircraft_index] = parking_spot
-            reward += 1  # Reward for successfully parking
-        else:
-            reward -= 1  # Penalty for invalid parking
-
-        done = np.all(self.state > 0)  # Episode ends when all aircraft are parked
-        return self.state, reward, done, {}
-
-    def is_valid_parking(self, aircraft_index, parking_spot):
-        # Add logic for checking parking constraints like clearance
-        return True  # For simplicity, assume valid for now
-
-    def render(self, mode='human'):
-        print(f'Current parking state: {self.state}')
-
-import gym
-from stable_baselines3 import PPO
-
-# Initialize the environment
-env = AirfieldParkingEnv(aircraft_list, parking_spots, initial_state)
-
-# Train the RL model (PPO)
-model = PPO("MlpPolicy", env, verbose=1)
-model.learn(total_timesteps=10000)
-
-# Save the model
-model.save("aircraft_parking_rl_model")
-
 import arcpy
+import pandas as pd
+import os
+import traceback
+import math
+from sklearn.neighbors import KNeighborsClassifier  # Example AI model
 
-class AircraftMOGOptimizationToolbox(object):
+class Toolbox(object):
     def __init__(self):
-        self.label = "Aircraft MOG Optimization"
-        self.alias = "MOG Optimization"
-        self.tools = [OptimizeParking]
+        self.label = "Aircraft MOG Optimization with AI"
+        self.alias = "AircraftMOG"
+        self.tools = [ImportAircraftData, CalculateAircraftFootprint, CalculateMaximumOnGround]
 
-class OptimizeParking(object):
+
+class ImportAircraftData(object):
     def __init__(self):
-        self.label = "Optimize Aircraft Parking"
-        self.description = "Tool for optimizing aircraft parking on an airfield"
+        self.label = "Import Aircraft Data"
+        self.description = "Import aircraft specifications from a CSV file and optionally save as a GDB table"
 
     def getParameterInfo(self):
-        params = []
-        params.append(arcpy.Parameter(
-            displayName="Aircraft List",
-            name="aircraft_list",
-            datatype="GPString",
-            parameterType="Required",
-            direction="Input"))
-
-        params.append(arcpy.Parameter(
-            displayName="Parking Spots",
-            name="parking_spots",
-            datatype="GPFeatureLayer",
-            parameterType="Required",
-            direction="Input"))
-
+        params = [
+            arcpy.Parameter(
+                displayName="Input CSV File", 
+                name="in_csv", 
+                datatype="DEFile", 
+                parameterType="Required", 
+                direction="Input"),
+            arcpy.Parameter(
+                displayName="Output Table (CSV or GDB)", 
+                name="out_table", 
+                datatype="DETable", 
+                parameterType="Required", 
+                direction="Output"),
+            arcpy.Parameter(
+                displayName="Save as Geodatabase Table", 
+                name="save_as_gdb", 
+                datatype="GPBoolean", 
+                parameterType="Optional", 
+                direction="Input")
+        ]
         return params
 
     def execute(self, parameters, messages):
-        aircraft_list = parameters[0].valueAsText.split(';')
-        parking_spots = parameters[1].valueAsText
+        in_csv = parameters[0].valueAsText
+        out_table = parameters[1].valueAsText
+        save_as_gdb = parameters[2].value  # Boolean for saving as GDB
+        
+        try:
+            # Read CSV data
+            if not os.path.exists(in_csv):
+                arcpy.AddError(f"Input CSV file does not exist: {in_csv}")
+                return
 
-        # Load the parking spots from the feature layer
-        parking_spots_layer = arcpy.management.MakeFeatureLayer(parking_spots, "parking_spots")
+            df = pd.read_csv(in_csv)
+            df = df.dropna(subset=['MDS'])  # Drop rows with missing MDS
 
-        # Step 1: Solve using CSP
-        csp_solver = AircraftParkingCSP(aircraft_list, parking_spots_layer, constraints)
-        initial_parking_plan = csp_solver.solve()
+            numeric_columns = ['LENGTH', 'WING_SPAN', 'HEIGHT', 'WING_HEIGHT', 'TURNING_RADIUS', 'MIN_RWY_LENGTH', 'ACFT_LCN']
+            for col in numeric_columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
 
-        # Step 2: Use RL to adapt the parking plan
-        env = AirfieldParkingEnv(aircraft_list, parking_spots_layer, initial_parking_plan)
-        rl_model = PPO.load("aircraft_parking_rl_model")
-        final_parking_plan = rl_model.predict(env.reset())
+            # Convert the CSV data to a temporary CSV file
+            temp_csv = os.path.join(arcpy.env.scratchFolder, "temp.csv")
+            df.to_csv(temp_csv, index=False)
 
-        # Output the final parking plan
-        arcpy.AddMessage(f"Final parking plan: {final_parking_plan}")
+            # Check if saving as GDB
+            if save_as_gdb:
+                # Save the table as a GDB table
+                gdb_path = os.path.dirname(out_table)
+                table_name = os.path.basename(out_table)
+                arcpy.conversion.TableToTable(temp_csv, gdb_path, table_name)
+                arcpy.AddMessage(f"Successfully saved as GDB table: {out_table}")
+            else:
+                # Save as a standard table (CSV)
+                arcpy.conversion.TableToTable(temp_csv, os.path.dirname(out_table), os.path.basename(out_table))
+                arcpy.AddMessage(f"Successfully imported aircraft records as CSV table.")
+            
+            # Clean up
+            os.remove(temp_csv)
+
+        except Exception as e:
+            arcpy.AddError(f"An error occurred during import: {str(e)}")
+            arcpy.AddError(arcpy.GetMessages())
+
+
+class CalculateAircraftFootprint(object):
+    def __init__(self):
+        self.label = "Create Aircraft Symbol Layer (Aircraft-Shaped Polygons)"
+        self.description = "Create polygon footprints resembling aircraft shapes for a selected aircraft at a specified airfield location."
+
+    def getParameterInfo(self):
+        params = [
+            arcpy.Parameter(
+                displayName="Input Aircraft Table",
+                name="in_table",
+                datatype="DETable",
+                parameterType="Required",
+                direction="Input"),
+            arcpy.Parameter(
+                displayName="Input Airfield Layer",
+                name="airfield_layer",
+                datatype="DEFeatureClass",
+                parameterType="Required",
+                direction="Input"),
+            arcpy.Parameter(
+                displayName="Output Feature Class",
+                name="out_fc",
+                datatype="DEFeatureClass",
+                parameterType="Required",
+                direction="Output"),
+            arcpy.Parameter(
+                displayName="Aircraft Name (MDS)",
+                name="aircraft_name",
+                datatype="GPString",
+                parameterType="Required",
+                direction="Input"),
+            arcpy.Parameter(
+                displayName="Quantity of Aircraft",
+                name="quantity_of_aircraft",
+                datatype="GPLong",
+                parameterType="Required",
+                direction="Input"),
+            arcpy.Parameter(
+                displayName="Clearance Distance (in feet)",
+                name="buffer_distance",
+                datatype="GPDouble",
+                parameterType="Required",
+                direction="Input"),
+            arcpy.Parameter(
+                displayName="Maximum Aircraft per Row",
+                name="max_per_row",
+                datatype="GPLong",
+                parameterType="Required",
+                direction="Input")
+        ]
+        return params
+
+    def create_aircraft_shape(self, x_start, y_start, length, wingspan):
+        # Define proportions for the aircraft shape
+        fuselage_width = length * 0.1
+        nose_length = length * 0.2
+        tail_length = length * 0.15
+        wing_sweep = length * 0.1
+        tail_sweep = length * 0.05
+
+        corners = [
+            arcpy.Point(x_start, y_start + length / 2),  # Nose tip
+            arcpy.Point(x_start - fuselage_width / 2, y_start + length / 2 - nose_length),  # Nose left
+            arcpy.Point(x_start - wingspan / 2, y_start + wing_sweep),  # Left wingtip front
+            arcpy.Point(x_start - wingspan / 2, y_start),  # Left wingtip middle
+            arcpy.Point(x_start - wingspan / 2, y_start - wing_sweep),  # Left wingtip rear
+            arcpy.Point(x_start - fuselage_width / 2, y_start - length / 2 + tail_length),  # Fuselage left before tail
+            arcpy.Point(x_start - wingspan / 4, y_start - length / 2),  # Left tail tip
+            arcpy.Point(x_start, y_start - length / 2 - tail_sweep),  # Tail bottom tip
+            arcpy.Point(x_start + wingspan / 4, y_start - length / 2),  # Right tail tip
+            arcpy.Point(x_start + fuselage_width / 2, y_start - length / 2 + tail_length),  # Fuselage right before tail
+            arcpy.Point(x_start + wingspan / 2, y_start - wing_sweep),  # Right wingtip rear
+            arcpy.Point(x_start + wingspan / 2, y_start),  # Right wingtip middle
+            arcpy.Point(x_start + wingspan / 2, y_start + wing_sweep),  # Right wingtip front
+            arcpy.Point(x_start + fuselage_width / 2, y_start + length / 2 - nose_length),  # Nose right
+            arcpy.Point(x_start, y_start + length / 2)  # Back to nose tip
+        ]
+        return corners
+
+    def execute(self, parameters, messages):
+        # Placeholder for execution logic. Refer to previous example.
+
+
+class CalculateMaximumOnGround(object):
+    def __init__(self):
+        self.label = "Calculate Maximum On Ground"
+        self.description = "Calculate the maximum number of aircraft that can park on a specific apron using AI to optimize parking."
+
+    def getParameterInfo(self):
+        params = [
+            arcpy.Parameter(
+                displayName="Input Aircraft Table",
+                name="in_table",
+                datatype="DETable",
+                parameterType="Required",
+                direction="Input"),
+            arcpy.Parameter(
+                displayName="Airfield Layer",
+                name="airfield_layer",
+                datatype="GPFeatureLayer",
+                parameterType="Required",
+                direction="Input"),
+            arcpy.Parameter(
+                displayName="Airfield Name",
+                name="airfield_name",
+                datatype="GPString",
+                parameterType="Required",
+                direction="Input"),
+            arcpy.Parameter(
+                displayName="Aircraft Clearance (ft)",
+                name="aircraft_clearance",
+                datatype="GPDouble",
+                parameterType="Required",
+                direction="Input"),  # Clearance around each aircraft
+            arcpy.Parameter(
+                displayName="Select Aircraft (MDS)",
+                name="selected_aircraft",
+                datatype="GPString",
+                parameterType="Required",
+                direction="Input",
+                multiValue=True),  # Allow multiple aircraft to be selected
+            arcpy.Parameter(
+                displayName="Aircraft Quantities (Comma Separated)",
+                name="aircraft_quantities",
+                datatype="GPString",
+                parameterType="Required",
+                direction="Input"),  # Comma-separated values for the quantities
+            arcpy.Parameter(
+                displayName="Apply LCN Compatibility?",
+                name="apply_lcn",
+                datatype="GPBoolean",
+                parameterType="Optional",
+                direction="Input")
+        ]
+        params[1].filter.list = ["Polygon"]  # Only allow polygon-type airfield layers
+        return params
+
+    def train_ai_model(self, aircraft_data, airfield_data):
+        # Example AI model: K-Nearest Neighbors for parking optimization
+        X = []  # Features (e.g., aircraft length, wingspan)
+        y = []  # Labels (e.g., parking positions)
+        for data in aircraft_data:
+            # Append aircraft length, wingspan, and other features as input to the model
+            X.append([data['LENGTH'], data['WING_SPAN']])
+            # Append corresponding parking position as the label
+            y.append(data['PARKING_POSITION'])
+        knn = KNeighborsClassifier(n_neighbors=3)
+        knn.fit(X, y)
+        return knn
+
+    def execute(self, parameters, messages):
+        in_table = parameters[0].valueAsText
+        airfield_layer = parameters[1].valueAsText
+        airfield_name = parameters[2].valueAsText
+        aircraft_clearance = float(parameters[3].valueAsText)
+        selected_aircraft = parameters[4].values
+        aircraft_quantities = parameters[5].valueAsText.split(',')
+        apply_lcn = parameters[6].value
+
+        try:
+            # Load aircraft and airfield data
+            aircraft_data = []  # Placeholder: Load actual aircraft data
+            airfield_data = []  # Placeholder: Load actual airfield data
+
+            # Train AI model
+            ai_model = self.train_ai_model(aircraft_data, airfield_data)
+
+            # Placeholder: Predict optimal parking positions
+            predictions = ai_model.predict([[aircraft['LENGTH'], aircraft['WING_SPAN']] for aircraft in aircraft_data])
+
+            arcpy.AddMessage(f"AI Model Predictions: {predictions}")
+
+        except Exception as e:
+            arcpy.AddError(f"An error occurred: {str(e)}")
+            arcpy.AddError(arcpy.GetMessages())
+            traceback.print_exc()
