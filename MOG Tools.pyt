@@ -5,6 +5,10 @@ import pandas as pd
 import os
 import math
 import traceback
+import re
+
+class MultipleObjects(Exception):
+    pass
 
 class Toolbox(object):
     def __init__(self):
@@ -113,53 +117,63 @@ class CalculateMaximumOnGround(object):
 
     def updateParameters(self, parameters):
 
-        if parameters[0].altered:
+        if parameters[0].altered and not parameters[0].hasBeenValidated:
             aircraft_table = parameters[0].valueAsText
             if aircraft_table:
                 aircraft_names = [row[0] for row in arcpy.da.SearchCursor(aircraft_table, "MDS") if row[0]] # Check if row[0] is valid and not <Null>. If <null>, filter.list breaks
                 parameters[6].filter.list = aircraft_names
         
-        if parameters[1].altered:
+        if parameters[1].altered and not parameters[1].hasBeenValidated:
             airfield_layer_object = parameters[1].value
             airfield_layer_object_name = parameters[1].valueAsText
             if airfield_layer_object:
-                # Check if the original airfield_layer_object has more than 4 vertices
-                vertex_count = 0
-                with arcpy.da.SearchCursor(airfield_layer_object, ["SHAPE@"]) as cursor:
-                    for row in cursor:
-                        for part in row[0]:
-                            vertex_count += len(part)
+                object_count = arcpy.management.GetCount(airfield_layer_object) # Check if more than one object is selected
+                try:
+                    if int(object_count[0]) == 1:
+                        arcpy.AddMessage
+                        arcpy.AddMessage(f"Selected airfield: {airfield_layer_object}")
+                    else:
+                        raise MultipleObjects(object_count)
+                except MultipleObjects:
+                    print(f"{airfield_layer_object_name} has multiple features. Please select one.")
 
-                if vertex_count > 4:
-                    # Create a copy of the airfield_layer_object as a new feature class
-                    workspace = os.path.dirname(arcpy.Describe(airfield_layer_object).catalogPath)
-                    valid_name = arcpy.ValidateTableName(airfield_layer_object_name + "_generalized", workspace)
-                    airfield_layer_object_generalized = os.path.join(workspace, valid_name)
-                    sr = arcpy.Describe(airfield_layer_object).spatialReference
-                    arcpy.management.CreateFeatureclass(workspace, valid_name, "POLYGON", spatial_reference=sr)
+            # Check if the original airfield_layer_object has more than 4 vertices
+            vertex_count = 0
+            with arcpy.da.SearchCursor(airfield_layer_object, ["SHAPE@"]) as cursor:
+                for row in cursor:
+                    for part in row[0]:
+                        vertex_count += len(part)
 
-                    # Copy all data from the original to the new feature class
-                    arcpy.management.CopyFeatures(airfield_layer_object, airfield_layer_object_generalized)
+            if vertex_count > 4:
+                # Create a copy of the airfield_layer_object as a new feature class
+                workspace = os.path.dirname(arcpy.Describe(airfield_layer_object).catalogPath)
+                valid_name = arcpy.ValidateTableName(airfield_layer_object_name + "_generalized", workspace)
+                airfield_layer_object_generalized = os.path.join(workspace, valid_name)
+                sr = arcpy.Describe(airfield_layer_object).spatialReference
+                arcpy.management.CreateFeatureclass(workspace, valid_name, "POLYGON", spatial_reference=sr)
 
-                    # Generalize the copied feature class
-                    arcpy.edit.Generalize(airfield_layer_object_generalized, "10 Feet")
-                else:
-                    airfield_layer_object_generalized = airfield_layer_object
+                # Copy all data from the original to the new feature class
+                arcpy.management.CopyFeatures(airfield_layer_object, airfield_layer_object_generalized)
 
-                # Proceed with gathering the points from the generalized feature class
-                points_list = []
-                for polygon in arcpy.da.SearchCursor(airfield_layer_object_generalized, ["SHAPE@"]):
-                    for part in polygon[0].getPart():
-                        i_point = 0
-                        for point in part:
-                            if point:
-                                i_point += 1
-                                points_list.append(f"{i_point}: X: {point.X},\tY: {point.Y}")
-                            else:
-                                break # Break is needed to ensure no inner rings
+                # Generalize the copied feature class
+                arcpy.edit.Generalize(airfield_layer_object_generalized, "10 Feet")
+            else:
+                airfield_layer_object_generalized = airfield_layer_object
+
+            # Proceed with gathering the points from the generalized feature class
+            points_list = []
+            for polygon in arcpy.da.SearchCursor(airfield_layer_object_generalized, ["SHAPE@"]):
+                for part in polygon[0].getPart():
+                    i_point = 0
+                    for point in part:
+                        if point:
+                            i_point += 1
+                            points_list.append(f"{i_point}: X: {point.X}, Y: {point.Y}")
+                        else:
+                            break # Break is needed to ensure no inner rings
 
 
-                parameters[2].filter.list = list(points_list)
+            parameters[2].filter.list = list(points_list)
     
         optimize_quantities_param = parameters[9]
         min_aircraft_quantities_param = parameters[10]
@@ -175,6 +189,10 @@ class CalculateMaximumOnGround(object):
         airfield_layer_object = parameters[1].value # added to work for the airfield layer generation
 
         airfield_layer_object_origin = parameters[2].valueAsText
+        origin_coords = re.findall(r"X:\s*([\d\.\-]+),\s*Y:\s*([\d\.\-]+)", airfield_layer_object_origin)
+        if origin_coords:
+            origin_x, origin_y = map(float, origin_coords[0])
+        airfield_layer_object_origin = arcpy.Point(origin_x, origin_y)
 
         interior_taxi_width = float(parameters[3].value)
         peripheral_taxi_width = float(parameters[4].value)
@@ -209,58 +227,12 @@ class CalculateMaximumOnGround(object):
         self.display_results(result, apron_length, apron_width, apron_lcn,
                              interior_taxi_width, peripheral_taxi_width, wingtip_clearance)
         
-        self.create_aircraft_layer(airfield_layer_object, aircraft_data, result, out_fc, wingtip_clearance, interior_taxi_width)
+        self.create_aircraft_layer(airfield_layer_object, airfield_layer_object_origin, aircraft_data, result, out_fc, wingtip_clearance, interior_taxi_width)
 
     def get_airfield_data(self, airfield_layer_object):
         
         with arcpy.da.SearchCursor(airfield_layer_object, ["LENGTH", "WIDTH", "LCN", "OID@", "SHAPE@"]) as cursor:
             for row in cursor:
-                # Print the current polygon or polyline's ID
-                arcpy.AddMessage(f"Feature {row[3]}:")
-
-                # Step through each part of the feature
-                for part in row[4]:
-
-                    # # Check if the part has more than 4 vertices
-                    # if len(part) > 4:
-
-                    #     arcpy.AddMessage("More than 4 points detected. Generalizing the airfield layer object...")
-                    #     # Copy the original feature class
-                    #     airfield_layer_object_generalized = airfield_layer_object
-                    #     arcpy.management.CopyFeatures(airfield_layer_object, airfield_layer_object_generalized)
-
-                    #     # Generalize the copied feature class
-                    #     arcpy.edit.Generalize(airfield_layer_object_generalized, "10 Feet")
-
-                    #     with arcpy.da.SearchCursor(airfield_layer_object_generalized, ["SHAPE@"]) as gen_cursor:
-                    #         for gen_row in gen_cursor:
-
-                    #             partnum = 0
-
-                    #             # Print the generalized part's points
-                    #             for gen_part in gen_row[0]:
-                    #                 for gen_pnt in gen_part:
-                    #                     if gen_pnt:
-                    #                         arcpy.AddMessage("Generalized Point {}: {}, {}".format(gen_part.index(gen_pnt), gen_pnt.X, gen_pnt.Y))
-                    #                     else:
-                    #                         arcpy.AddMessage("Interior Ring:")
-
-                    #         partnum += 1
-                    # else:
-                    partnum = 0
-                    pointnum = 0
-                    # Print the part number
-                    arcpy.AddMessage(f"Part {partnum}:")
-                    # Print the part's points
-                    for pnt in part:
-                        if pnt:
-                            arcpy.AddMessage(f"Point {pointnum}: {pnt.X}, {pnt.Y}")
-                        else:
-                            arcpy.AddMessage("Interior Ring:")
-                        pointnum += 1
-
-                    partnum += 1
-
                 return float(row[0]), float(row[1]), float(row[2])
             
         arcpy.AddError(f"Object '{airfield_layer_object}' not found.")
@@ -508,7 +480,7 @@ class CalculateMaximumOnGround(object):
         return [max(min_count, gene + random.randint(-1, 1)) if random.random() < mutation_rate else gene 
                 for gene, min_count in zip(individual, min_counts)]
 
-    def create_aircraft_layer(self, airfield_layer_object, aircraft_data, mog_result, out_fc, wingtip_clearance, interior_taxi_width):
+    def create_aircraft_layer(self, airfield_layer_object, airfield_layer_object_origin, aircraft_data, mog_result, out_fc, wingtip_clearance, interior_taxi_width):
 
         try:
             # Validate and create output feature class
@@ -526,43 +498,21 @@ class CalculateMaximumOnGround(object):
 
             # Check if column with shape angles exists in the airfield layer
 
-            if "SHAPE_ANGLE" not in [columns.name for columns in arcpy.ListFields(airfield_layer_object)]:
-                arcpy.management.AddField(airfield_layer_object, "SHAPE_ANGLE", "DOUBLE")
-                arcpy.AddMessage("Field 'SHAPE_ANGLE' added to the input table.")
-            else:
-                arcpy.AddMessage("Field 'SHAPE_ANGLE' already exists in the input table.")
-
-                            
-            # Calculate the angle of the selected object of the airfield
-            arcpy.cartography.CalculatePolygonMainAngle(airfield_layer_object, "SHAPE_ANGLE", "GEOGRAPHIC")
-
-            # Get the airfield data (location and size)
-            with arcpy.da.SearchCursor(airfield_layer_object, ["LENGTH", "WIDTH", "SHAPE_ANGLE", "LATITUDE", "LONGITUDE", "LCN"]) as search_cursor:
-                for row in search_cursor:
-                    apron_length, apron_width, apron_angle, start_lat, start_lon, apron_lcn = row
-                    apron_length = float(apron_length) if apron_length is not None else 0
-                    apron_width = float(apron_width) if apron_width is not None else 0
-                    apron_angle = float(apron_angle) if apron_angle is not None else 0
-                    start_lat = float(start_lat) if start_lat is not None else 0
-                    start_lon = float(start_lon) if start_lon is not None else 0
-                    apron_lcn = float(apron_lcn) if apron_lcn is not None else 0
-                    break
-
-            arcpy.AddMessage(f"Airfield data: Length = {apron_length}, Width = {apron_width}, Angle = {apron_angle}, Lat = {start_lat}, Lon = {start_lon}, LCN = {apron_lcn}")
-            arcpy.AddMessage(f"Creatig objects for the following aircrafts: {aircraft_data}")
-
-            x_start = start_lon
-            y_start = start_lat
+            x_start = airfield_layer_object_origin.X
+            y_start = airfield_layer_object_origin.Y
 
             # Process the selected aircraft
             for row in aircraft_data:
-                mds, length, wingspan, aircraft_lcn = row
+                mds, length, wingspan, aicraft_lcn = row
 
                 length = float(length) if length is not None else 0
                 wingspan = float(wingspan) if wingspan is not None else 0
 
                 length_in_degrees = length / 364000  # Approximate conversion from feet to degrees latitude
                 wingspan_in_degrees = wingspan / 364000
+
+                x_start += wingspan_in_degrees / 2
+                y_start += length_in_degrees / 2
 
                 result_tuple = next((item for item in mog_result if item[0] == mds), None)
                 if result_tuple is None:
@@ -585,7 +535,7 @@ class CalculateMaximumOnGround(object):
                         y = y_start + (row_index * (length_in_degrees + interior_taxi_width / 364000))
 
                         # Create the aircraft shape
-                        aircraft_shapes = self.create_aircraft_shape(x, y, length_in_degrees, wingspan_in_degrees, apron_angle)
+                        aircraft_shapes = self.create_aircraft_shape(x, y, length_in_degrees, wingspan_in_degrees)
 
                         # Create the polygon
                         polygon = arcpy.Polygon(arcpy.Array(aircraft_shapes), sr)
@@ -609,7 +559,7 @@ class CalculateMaximumOnGround(object):
             arcpy.AddError(arcpy.GetMessages())
             arcpy.AddError(traceback.format_exc())
 
-    def create_aircraft_shape(self, x_start, y_start, length, wingspan, angle):
+    def create_aircraft_shape(self, x_start, y_start, length, wingspan):
         # Define proportions
         fuselage_width = length * 0.1
         nose_length = length * 0.2
@@ -636,9 +586,9 @@ class CalculateMaximumOnGround(object):
         ]
 
         # Rotate the aircraft shape based on the angle
-        angle_rad = math.radians(angle)
-        cos_angle = math.cos(angle_rad)
-        sin_angle = math.sin(angle_rad)
+        # angle_rad = math.radians(angle)
+        # cos_angle = math.cos(angle_rad)
+        # sin_angle = math.sin(angle_rad)
 
         # rotated_corners = []
         # for corner in corners:
