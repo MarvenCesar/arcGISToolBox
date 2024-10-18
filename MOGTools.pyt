@@ -520,12 +520,14 @@ class CalculateMaximumOnGround(object):
         if manual_length is not None:
             apron_length = float(manual_length)
         else:
-            apron_length = 1800  # Default value or retrieve from airfield data
+            # Retrieve apron length from airfield data
+            apron_length = self.get_airfield_dimension(airfield_layer, airfield_name, "LENGTH")
 
         if manual_width is not None:
             apron_width = float(manual_width)
         else:
-            apron_width = 1050  # Default value or retrieve from airfield data
+            # Retrieve apron width from airfield data
+            apron_width = self.get_airfield_dimension(airfield_layer, airfield_name, "WIDTH")
 
         # Enable advanced settings if the checkbox is checked
         if enable_advanced_settings:
@@ -566,3 +568,11 @@ class CalculateMaximumOnGround(object):
                 if row[0] in selected_aircraft:
                     aircraft_data.append(row)
         return aircraft_data
+
+    def get_airfield_dimension(self, airfield_layer, airfield_name, dimension_field):
+        where_clause = f"AFLD_NAME = '{airfield_name}'"
+        with arcpy.da.SearchCursor(airfield_layer, [dimension_field], where_clause) as cursor:
+            for row in cursor:
+                return row[0]  # Return the requested dimension
+        arcpy.AddError(f"Airfield '{airfield_name}' not found or dimension '{dimension_field}' not available.")
+        return None  # Return None if not found
