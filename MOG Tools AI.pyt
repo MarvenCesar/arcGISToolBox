@@ -17,6 +17,9 @@ class CalculateMaximumOnGround(object):
     def __init__(self):
         self.label = "Calculate Maximum On Ground"
         self.description = "Calculate the maximum number of aircraft that can park on a specific apron using AI for optimized parking."
+        self.canRunInBackground = False
+        self.optimization_attempts = 20
+        self.aircraft_data = None  # Add this line
 
     def getParameterInfo(self):
         params = [
@@ -39,8 +42,20 @@ class CalculateMaximumOnGround(object):
                 parameterType="Required",
                 direction="Input"),
             arcpy.Parameter(
-                displayName="Aircraft Clearance (ft)",
-                name="aircraft_clearance",
+                displayname="Interior Taxiway Width (ft)",
+                name="interior_taxiway_width",
+                datatype="GPDouble",
+                parameterType="Required",
+                direction="Input"),
+            arcpy.Parameter(
+                displayname="Peripheral Taxiway Width (ft)",
+                name="peripheral_taxiway_width",
+                datatype="GPDouble",
+                parameterType="Required",
+                direction="Input"),
+            arcpy.Parameter(
+                displayName="Aircraft Wingtip Clearance (ft)",
+                name="wingtip_clearance",
                 datatype="GPDouble",
                 parameterType="Required",
                 direction="Input"),  # Clearance around each aircraft
@@ -62,9 +77,37 @@ class CalculateMaximumOnGround(object):
                 name="apply_lcn",
                 datatype="GPBoolean",
                 parameterType="Optional",
-                direction="Input")
+                direction="Input"),
+            arcpy.Parameter(
+                displayName="Optimize Quantities",
+                name="optimize_quantities",
+                datatype="GPBoolean",
+                parameterType="Optional",
+                direction="Input"),
+            arcpy.Parameter(
+                displayName="Minimum Aircraft Quantities (Comma Separated)",
+                name="min_quantities",
+                datatype="GPString",
+                parameterType="Optional",
+                direction="Input",
+                enabled=False),
+            arcpy.Parameter(
+                displayName="Number of Optimization Attempts",
+                name="optimization_attempts",
+                datatype="GPLong",
+                parameterType="Optional",
+                direction="Input",
+                enabled=False),
+            arcpy.Parameter(
+                displayName="Output Feature Class",
+                name="output_fc",
+                datatype="DEFeatureClass",
+                parameterType="Required",
+                direction="Output")
         ]
         params[1].filter.list = ["Polygon"]  # Only allow polygon-type airfield layers
+        params[9].value = False  # Default value for optimization
+        params[11].value = 20 # Default value for optimization attempts
         return params
 
     def updateParameters(self, parameters):
@@ -76,29 +119,50 @@ class CalculateMaximumOnGround(object):
                 parameters[2].filter.list = sorted(set(airfield_names))
         
         # Populate Aircraft Dropdown based on the Input Aircraft Table
-        if parameters[0].altered and not parameters[4].altered:
+        if parameters[0].altered and not parameters[6].altered:
             aircraft_table = parameters[0].valueAsText
             if aircraft_table:
                 try:
                     # Fetch unique aircraft names (MDS) from the table
-                    aircraft_names = set()
-                    with arcpy.da.SearchCursor(aircraft_table, ["MDS"]) as cursor:
-                        for row in cursor:
-                            aircraft_names.add(row[0])
-                    parameters[4].filter.list = sorted(aircraft_names)  # Populate dropdown with unique MDS
+                    aircraft_names = set(row[0] for row in arcpy.da.SearchCursor(aircraft_table, ["MDS"]))
+                    parameters[6].filter.list = sorted(aircraft_names)  # Populate dropdown with unique MDS
                 except Exception as e:
                     arcpy.AddError(f"Error loading aircraft names: {e}")
 
-        return
+        optimize_quantities_param = parameters[9].value
+        min_aircraft_quantities_param = parameters[10]
+        optimization_attempts_param = parameters[11]
+
+        optimize_quantities_param.value = False if optimize_quantities_param.value is None else optimize_quantities_param.value
+        min_aircraft_quantities_param.enabled = optimize_quantities_param.value
+        optimization_attempts_param.enabled = optimize_quantities_param.value
 
     def execute(self, parameters, messages):
-        in_table = parameters[0].valueAsText
+        # Extract parameter values
+        aircraft_table = parameters[0].valueAsText
         airfield_layer = parameters[1].valueAsText
+        airfield_layer_object = parameters[1].value # added to work for the airfield layer generation
         airfield_name = parameters[2].valueAsText
-        aircraft_clearance = float(parameters[3].valueAsText)  # Clearance around each aircraft
-        selected_aircraft = parameters[4].values  # List of selected aircraft MDS
-        aircraft_quantities = parameters[5].valueAsText.split(',')  # Quantities entered as comma-separated values
-        apply_lcn = parameters[6].value  # Whether to apply LCN compatibility constraint
+        interior_taxi_width = float(parameters[3].valueAsText)
+        peripheral_taxi_width = float(parameters[4].valueAsText)
+        wingtip_clearance = float(parameters[5].valueAsText)
+        selected_aircraft = parameters[6].valueAsText.split(';')
+        aircraft_quantities = parameters[7].valueAsText
+        apply_lcn = parameters[8].value
+        optimize_quantities = parameters[9].value
+        min_quantities = parameters[10].valueAsText
+
+        # Process min quantities
+        if parameters[10].value:
+            min_quantities = parameters[10].valueAsText
+        else:
+            min_quantities = ','.join(['1'] * len(selected_aircraft))  # Default to 1 for each aircraft type
+
+        # Get airfield data
+        apron_length, apron_width, apron_lcn = self.get_airfield_data(airfield_layer, airfield_name)
+
+        # Get aircraft data
+        aircraft_data = self.get_aircraft_data(aircraft_table, selected_aircraft)
 
         # Ensure that the number of aircraft matches the number of quantities
         if len(selected_aircraft) != len(aircraft_quantities):
@@ -134,7 +198,7 @@ class CalculateMaximumOnGround(object):
             # Prepare input features for the AI model
             input_features = []
             for i, mds in enumerate(selected_aircraft):
-                with arcpy.da.SearchCursor(in_table, ["MDS", "LENGTH", "WING_SPAN", "ACFT_LCN"]) as cursor:
+                with arcpy.da.SearchCursor(aircraft_table, ["MDS", "LENGTH", "WING_SPAN", "ACFT_LCN"]) as cursor:
                     for row in cursor:
                         aircraft_mds, length, wingspan, aircraft_lcn = row
                         if aircraft_mds == mds:
@@ -145,7 +209,7 @@ class CalculateMaximumOnGround(object):
                                 arcpy.AddError(f"Invalid data for {aircraft_mds}: LENGTH={length}, WING_SPAN={wingspan}, ACFT_LCN={aircraft_lcn}")
                                 return
                             # Add data as features for prediction
-                            input_features.append([apron_length, apron_width, length, wingspan, aircraft_clearance, aircraft_quantities[i], apply_lcn])
+                            input_features.append([apron_length, apron_width, length, wingspan, interior_taxi_width, peripheral_taxi_width, wingtip_clearance, aircraft_lcn, aircraft_quantities[i], apply_lcn])
 
             # Convert input features to numpy array for model prediction
             input_features = np.array(input_features)
