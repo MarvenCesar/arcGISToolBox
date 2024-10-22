@@ -565,7 +565,6 @@ class CalculateMaximumOnGround(object):
         # 1) Determine # Rows for rotated configuration
         available_length_rotated = apron_width
         num_rows_rotated = math.floor((available_length_rotated + interior_taxi_width) / (aircraft_length + interior_taxi_width))
-        # Continue with the rest of the execution logic...
 
         # Run genetic algorithm
         ga = GeneticAlgorithm(population_size, mutation_rate, generations)
