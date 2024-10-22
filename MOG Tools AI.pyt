@@ -417,7 +417,7 @@ class CalculateAircraftFootprint(object):
 class CalculateMaximumOnGround(object):
     def __init__(self):
         self.label = "Calculate Maximum On Ground"
-        self.description = "Calculates the maximum number of aircraft that can be parked on an airfield."
+        self.description = "Calculates the maximum number of aircraft that can be parked on an airfield using a genetic algorithm."
         self.canRunInBackground = False
 
     def getParameterInfo(self):
@@ -447,226 +447,109 @@ class CalculateMaximumOnGround(object):
                 parameterType="Required",
                 direction="Input"),
             arcpy.Parameter(
-                displayName="Enable Advanced Settings",
-                name="enable_advanced_settings",
-                datatype="GPBoolean",
-                parameterType="Optional",
+                displayName="Population Size",
+                name="population_size",
+                datatype="GPLong",
+                parameterType="Required",
                 direction="Input"),
             arcpy.Parameter(
-                displayName="Manual Airfield Length (ft)",
-                name="manual_length",
+                displayName="Mutation Rate",
+                name="mutation_rate",
                 datatype="GPDouble",
-                parameterType="Optional",
+                parameterType="Required",
                 direction="Input"),
             arcpy.Parameter(
-                displayName="Manual Airfield Width (ft)",
-                name="manual_width",
-                datatype="GPDouble",
-                parameterType="Optional",
+                displayName="Generations",
+                name="generations",
+                datatype="GPLong",
+                parameterType="Required",
                 direction="Input"),
             arcpy.Parameter(
-                displayName="Manual Interior Taxiway Width (ft)",
-                name="manual_interior_taxi_width",
+                displayName="Buffer Distance (in feet)",
+                name="buffer_distance",
                 datatype="GPDouble",
-                parameterType="Optional",
+                parameterType="Required",
                 direction="Input"),
             arcpy.Parameter(
-                displayName="Manual Peripheral Taxiway Width (ft)",
-                name="manual_peripheral_taxi_width",
-                datatype="GPDouble",
-                parameterType="Optional",
+                displayName="Maximum Aircraft per Row",
+                name="max_per_row",
+                datatype="GPLong",
+                parameterType="Required",
                 direction="Input"),
+            arcpy.Parameter(
+                displayName="Output Feature Class",
+                name="out_fc",
+                datatype="DEFeatureClass",
+                parameterType="Required",
+                direction="Output")
         ]
-
-        # Set default values for advanced settings parameters
-        for param in params[5:]:
-            param.enabled = False  # Disable all advanced settings parameters by default
-
         return params
 
-    def updateParameters(self, parameters):
-        # Auto-populate airfield name based on selected airfield layer
-        airfield_layer = parameters[1].valueAsText
-        if airfield_layer:
-            airfield_name_field = "AFLD_NAME"
-            if airfield_name_field in [f.name for f in arcpy.ListFields(airfield_layer)]:
-                with arcpy.da.SearchCursor(airfield_layer, [airfield_name_field]) as cursor:
-                    for row in cursor:
-                        parameters[2].value = row[0]  # Set the airfield name
-            else:
-                arcpy.AddWarning(f"The field '{airfield_name_field}' does not exist in the selected airfield layer.")
-
-        # Populate the dropdown for Select Aircraft (MDS)
-        aircraft_table = parameters[0].valueAsText
-        if aircraft_table:
-            mds_field = "MDS"  # Replace with the actual field name for MDS in your aircraft table
-            mds_values = set()  # Use a set to avoid duplicates
-            with arcpy.da.SearchCursor(aircraft_table, [mds_field]) as cursor:
-                for row in cursor:
-                    mds_values.add(row[0])  # Add MDS values to the set
-            parameters[3].filter.list = list(mds_values)  # Set the dropdown list
-
-        # Show/hide advanced settings based on checkbox
-        enable_advanced_settings = parameters[4].value
-        for param in parameters[5:]:
-            param.enabled = enable_advanced_settings
-
-        return
-
-    def calculate_taxiway_widths(self, aircraft_length, aircraft_wingspan):
-        # Initialize taxiway widths
-        interior_taxi_width = 0
-        peripheral_taxi_width = 0
-
-        # Convert wingspan to feet for comparison
-        wingspan_ft = aircraft_wingspan  # Assuming wingspan is already in feet
-
-        # Determine taxiway widths based on wingspan
-        if wingspan_ft >= 110:  # Aircraft with wingspan >= 110 ft
-            peripheral_taxi_width = 50  # Wingtip clearance for moving aircraft on peripheral
-            interior_taxi_width = 30 + 30  # Wingtip clearance on each side for moving aircraft between parked
-        else:  # Aircraft with wingspan < 110 ft
-            peripheral_taxi_width = 30  # Wingtip clearance for moving aircraft on peripheral
-            interior_taxi_width = 20 + 20  # Wingtip clearance on each side for moving aircraft between parked
-
-        return interior_taxi_width, peripheral_taxi_width
-
-    def calculate_parking_available(self, apron_length, apron_width, aircraft_length, aircraft_wingspan):
-        # Calculate the taxiway dimensions based on the aircraft specifications
-        if aircraft_wingspan >= 110:  # Condition for larger aircraft
-            interior_taxi_width = 30 + aircraft_wingspan + 30  # Example calculation for larger aircraft
-        else:
-            interior_taxi_width = 20 + aircraft_wingspan + 20  # Example calculation for smaller aircraft
-
-        peripheral_taxi_width = 50 + (aircraft_wingspan / 2) + 37.5  # Peripheral Taxi Width
-        wingtip_between_parked = 25  # Space between parked aircraft
-
-        # I. Standard apron (Width = apron_width, Length = apron_length)
-        # 1) Determine # rows
-        available_length = apron_length
-        num_rows = math.floor((available_length + interior_taxi_width) / (aircraft_length + interior_taxi_width))
-        
-        # Print the number of rows
-        arcpy.AddMessage(f"Standard Configuration - Available Length: {available_length}, Interior Taxi Width: {interior_taxi_width}, Aircraft Length: {aircraft_length}")
-        arcpy.AddMessage(f"Calculated Rows: {num_rows}")
-
-        # 2) Determine # Cols
-        available_width = max(0, apron_width - peripheral_taxi_width)
-        num_cols = math.floor((available_width + wingtip_between_parked) / (aircraft_wingspan + wingtip_between_parked))
-        
-        # Print the number of columns
-        arcpy.AddMessage(f"Standard Configuration - Available Width: {available_width}, Wingtip Between Parked: {wingtip_between_parked}, Aircraft Wingspan: {aircraft_wingspan}")
-        arcpy.AddMessage(f"Calculated Columns: {num_cols}")
-
-        # 3) Parking Available I
-        parking_available_I = num_rows * num_cols
-
-        # II) Rotated configuration (Width=Length, Length=Width)
-        # 1) Determine # Rows for rotated configuration
-        available_length_rotated = apron_width
-        num_rows_rotated = math.floor((available_length_rotated + interior_taxi_width) / (aircraft_length + interior_taxi_width))
-        # Continue with the rest of the execution logic...
-
-        # Run genetic algorithm
-        ga = GeneticAlgorithm(population_size, mutation_rate, generations)
-        best_solution = ga.run(apron_length, apron_width, aircraft_length, aircraft_wingspan, buffer_distance, max_per_row)
-
-        # Output the best solution
-        arcpy.AddMessage(f"Best solution: {best_solution}")
-        # Print the number of rows for rotated configuration
-        arcpy.AddMessage(f"Rotated Configuration - Available Length: {available_length_rotated}, Interior Taxi Width: {interior_taxi_width}, Aircraft Length: {aircraft_length}")
-        arcpy.AddMessage(f"Calculated Rotated Rows: {num_rows_rotated}")
-
-        # 2) Determine # Cols for rotated configuration
-        available_width_rotated = max(0, apron_length - peripheral_taxi_width)
-        num_cols_rotated = math.floor((available_width_rotated + wingtip_between_parked) / (aircraft_wingspan + wingtip_between_parked))
-        
-        # Print the number of columns for rotated configuration
-        arcpy.AddMessage(f"Rotated Configuration - Available Width: {available_width_rotated}, Wingtip Between Parked: {wingtip_between_parked}, Aircraft Wingspan: {aircraft_wingspan}")
-        arcpy.AddMessage(f"Calculated Rotated Columns: {num_cols_rotated}")
-
-        # 3) Parking Available II
-        parking_available_II = num_rows_rotated * num_cols_rotated
-
-        # III) Final Parking Available
-        final_parking_available = max(parking_available_I, parking_available_II)
-
-        # Print final parking available
-        arcpy.AddMessage(f"Final Parking Available: {final_parking_available}")
-
-        return final_parking_available
-
     def execute(self, parameters, messages):
-        # Extract parameter values
         aircraft_table = parameters[0].valueAsText
         airfield_layer = parameters[1].valueAsText
         airfield_name = parameters[2].valueAsText
-        selected_aircraft = parameters[3].valueAsText.split(';')
-        enable_advanced_settings = parameters[4].value
+        selected_aircraft = parameters[3].valueAsText
+        population_size = int(parameters[4].valueAsText)
+        mutation_rate = float(parameters[5].valueAsText)
+        generations = int(parameters[6].valueAsText)
+        buffer_distance = float(parameters[7].valueAsText)
+        max_per_row = int(parameters[8].valueAsText)
+        out_fc = parameters[9].valueAsText
 
-        # Check for manual airfield dimensions
-        manual_length = parameters[5].value
-        manual_width = parameters[6].value
-        manual_interior_taxi_width = parameters[7].value
-        manual_peripheral_taxi_width = parameters[8].value
-
-        # Use manual inputs if provided, otherwise use defaults
-        if manual_length is not None:
-            apron_length = float(manual_length)
-        else:
-            # Retrieve apron length from airfield data
+        try:
+            # Get airfield dimensions
             apron_length = self.get_airfield_dimension(airfield_layer, airfield_name, "LENGTH")
-
-        if manual_width is not None:
-            apron_width = float(manual_width)
-        else:
-            # Retrieve apron width from airfield data
             apron_width = self.get_airfield_dimension(airfield_layer, airfield_name, "WIDTH")
 
-        # Enable advanced settings if the checkbox is checked
-        if enable_advanced_settings:
-            if manual_interior_taxi_width is not None:
-                interior_taxi_width = float(manual_interior_taxi_width)
-            else:
-                interior_taxi_width = None  # Will be calculated based on aircraft dimensions
+            # Get aircraft dimensions
+            aircraft_data = self.get_aircraft_data(aircraft_table, selected_aircraft)
+            if not aircraft_data:
+                arcpy.AddError(f"Aircraft {selected_aircraft} not found in the input table.")
+                return
 
-            if manual_peripheral_taxi_width is not None:
-                peripheral_taxi_width = float(manual_peripheral_taxi_width)
-            else:
-                peripheral_taxi_width = None  # Will be calculated based on aircraft dimensions
-        else:
-            interior_taxi_width = None  # Will be calculated based on aircraft dimensions
-            peripheral_taxi_width = None  # Will be calculated based on aircraft dimensions
+            aircraft_length, aircraft_wingspan = aircraft_data[0][1], aircraft_data[0][2]
 
-        # Get aircraft dimensions (assuming you have a method to retrieve these)
-        aircraft_data = self.get_aircraft_data(aircraft_table, selected_aircraft)
-        for mds, length, wingspan, _ in aircraft_data:
-            # Calculate taxiway widths based on aircraft dimensions if not manually provided
-            if interior_taxi_width is None or peripheral_taxi_width is None:
-                interior_taxi_width, peripheral_taxi_width = self.calculate_taxiway_widths(length, wingspan)
+            # Run genetic algorithm
+            ga = GeneticAlgorithm(population_size, mutation_rate, generations)
+            best_solution = ga.run(apron_length, apron_width, aircraft_length, aircraft_wingspan, buffer_distance, max_per_row)
 
-            # Assuming a fixed wingtip clearance for parked aircraft
-            wingtip_between_parked = 25  # Adjust as necessary based on your requirements
+            # Create output feature class
+            workspace = os.path.dirname(out_fc)
+            valid_name = arcpy.ValidateTableName(os.path.basename(out_fc), workspace)
+            out_fc = os.path.join(workspace, valid_name)
+            sr = arcpy.Describe(airfield_layer).spatialReference
+            arcpy.CreateFeatureclass_management(workspace, valid_name, "POINT", spatial_reference=sr)
 
-            # Calculate parking available for each aircraft
-            # parking_available = self.calculate_parking_available(apron_length, apron_width, interior_taxi_width, peripheral_taxi_width, length, wingspan, wingtip_between_parked)
-            parking_available = self.calculate_parking_available(apron_length, apron_width, length, wingspan)
-            arcpy.AddMessage(f"Parking available for {mds}: {parking_available}")
+            # Add fields for aircraft properties
+            arcpy.AddField_management(out_fc, "MDS", "TEXT")
+            arcpy.AddField_management(out_fc, "LENGTH", "DOUBLE")
+            arcpy.AddField_management(out_fc, "WINGSPAN", "DOUBLE")
 
-        # Continue with the rest of the execution logic...
+            # Insert aircraft positions into the feature class
+            with arcpy.da.InsertCursor(out_fc, ["SHAPE@", "MDS", "LENGTH", "WINGSPAN"]) as cursor:
+                for (x, y) in best_solution:
+                    point = arcpy.Point(x, y)
+                    cursor.insertRow([point, selected_aircraft, aircraft_length, aircraft_wingspan])
+
+            arcpy.AddMessage(f"Best solution visualized in {out_fc}")
+
+        except Exception as e:
+            arcpy.AddError(f"An error occurred: {str(e)}")
+            arcpy.AddError(arcpy.GetMessages())
+            arcpy.AddError(traceback.format_exc())
 
     def get_aircraft_data(self, aircraft_table, selected_aircraft):
-        aircraft_data = []
-        with arcpy.da.SearchCursor(aircraft_table, ["MDS", "LENGTH", "WING_SPAN", "ACFT_LCN"]) as cursor:
+        with arcpy.da.SearchCursor(aircraft_table, ["MDS", "LENGTH", "WING_SPAN"]) as cursor:
             for row in cursor:
-                if row[0] in selected_aircraft:
-                    aircraft_data.append(row)
-        return aircraft_data
+                if row[0] == selected_aircraft:
+                    return [row]
+        return []
 
     def get_airfield_dimension(self, airfield_layer, airfield_name, dimension_field):
         where_clause = f"AFLD_NAME = '{airfield_name}'"
         with arcpy.da.SearchCursor(airfield_layer, [dimension_field], where_clause) as cursor:
             for row in cursor:
-                return row[0]  # Return the requested dimension
+                return row[0]
         arcpy.AddError(f"Airfield '{airfield_name}' not found or dimension '{dimension_field}' not available.")
-        return None  # Return None if not found
+        return None
