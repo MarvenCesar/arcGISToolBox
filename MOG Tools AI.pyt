@@ -30,6 +30,8 @@ class GeneticAlgorithm(object):
         return fitness
 
     def select_parents(self, population, fitnesses):
+        if all(f == 0 for f in fitnesses):
+            raise ValueError("All fitness values are zero. Cannot proceed with selection.")
         selected = random.choices(population, weights=fitnesses, k=2)
         return selected
 
@@ -44,43 +46,15 @@ class GeneticAlgorithm(object):
             if random.random() < self.mutation_rate:
                 x = random.uniform(0, apron_width - aircraft_wingspan)
                 y = random.uniform(0, apron_length - aircraft_length)
-            arcpy.Parameter(
-                displayName="Population Size",
-                name="population_size",
-                datatype="GPLong",
-                parameterType="Required",
-                direction="Input"),
-            arcpy.Parameter(
-                displayName="Mutation Rate",
-                name="mutation_rate",
-                datatype="GPDouble",
-                parameterType="Required",
-                direction="Input"),
-            arcpy.Parameter(
-                displayName="Generations",
-                name="generations",
-                datatype="GPLong",
-                parameterType="Required",
-                direction="Input"),
-            arcpy.Parameter(
-                displayName="Buffer Distance (in feet)",
-                name="buffer_distance",
-                datatype="GPDouble",
-                parameterType="Required",
-                direction="Input"),
-            arcpy.Parameter(
-                displayName="Maximum Aircraft per Row",
-                name="max_per_row",
-                datatype="GPLong",
-                parameterType="Required",
-                direction="Input")
-
+                solution[i] = (x, y)
         return solution
 
     def run(self, apron_length, apron_width, aircraft_length, aircraft_wingspan, buffer_distance, max_per_row):
         population = self.initialize_population(apron_length, apron_width, aircraft_length, aircraft_wingspan, max_per_row)
         for generation in range(self.generations):
             fitnesses = [self.evaluate_fitness(solution, apron_length, apron_width, aircraft_length, aircraft_wingspan, buffer_distance) for solution in population]
+            if all(f == 0 for f in fitnesses):
+                raise ValueError("All fitness values are zero. Cannot proceed with selection.")
             new_population = []
             for _ in range(self.population_size // 2):
                 parent1, parent2 = self.select_parents(population, fitnesses)
@@ -483,6 +457,25 @@ class CalculateMaximumOnGround(object):
                 parameterType="Required",
                 direction="Output")
         ]
+
+        # Populate the Airfield Name drop-down
+        airfield_layer = params[1].valueAsText
+        if airfield_layer:
+            airfield_names = set()
+            with arcpy.da.SearchCursor(airfield_layer, ["AFLD_NAME"]) as cursor:
+                for row in cursor:
+                    airfield_names.add(row[0])
+            params[2].filter.list = sorted(airfield_names)
+
+        # Populate the Aircraft Name drop-down
+        aircraft_table = params[0].valueAsText
+        if aircraft_table:
+            aircraft_names = set()
+            with arcpy.da.SearchCursor(aircraft_table, ["MDS"]) as cursor:
+                for row in cursor:
+                    aircraft_names.add(row[0])
+            params[3].filter.list = sorted(aircraft_names)
+
         return params
 
     def execute(self, parameters, messages):
