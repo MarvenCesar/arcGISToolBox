@@ -457,26 +457,29 @@ class CalculateMaximumOnGround(object):
                 parameterType="Required",
                 direction="Output")
         ]
+        return params
 
+    def updateParameters(self, parameters):
         # Populate the Airfield Name drop-down
-        airfield_layer = params[1].valueAsText
-        if airfield_layer:
-            airfield_names = set()
-            with arcpy.da.SearchCursor(airfield_layer, ["AFLD_NAME"]) as cursor:
-                for row in cursor:
-                    airfield_names.add(row[0])
-            params[2].filter.list = sorted(airfield_names)
+        if parameters[1].altered and not parameters[2].altered:
+            airfield_layer = parameters[1].valueAsText
+            if airfield_layer:
+                airfield_names = set()
+                with arcpy.da.SearchCursor(airfield_layer, ["AFLD_NAME"]) as cursor:
+                    for row in cursor:
+                        airfield_names.add(row[0])
+                parameters[2].filter.list = sorted(airfield_names)
 
         # Populate the Aircraft Name drop-down
-        aircraft_table = params[0].valueAsText
-        if aircraft_table:
-            aircraft_names = set()
-            with arcpy.da.SearchCursor(aircraft_table, ["MDS"]) as cursor:
-                for row in cursor:
-                    aircraft_names.add(row[0])
-            params[3].filter.list = sorted(aircraft_names)
-
-        return params
+        if parameters[0].altered and not parameters[3].altered:
+            aircraft_table = parameters[0].valueAsText
+            if aircraft_table:
+                aircraft_names = set()
+                with arcpy.da.SearchCursor(aircraft_table, ["MDS"]) as cursor:
+                    for row in cursor:
+                        aircraft_names.add(row[0])
+                parameters[3].filter.list = sorted(aircraft_names)
+        return
 
     def execute(self, parameters, messages):
         aircraft_table = parameters[0].valueAsText
@@ -537,7 +540,8 @@ class CalculateMaximumOnGround(object):
             for row in cursor:
                 if row[0] == selected_aircraft:
                     return [row]
-        return []
+        arcpy.AddError(f"Aircraft '{selected_aircraft}' not found in the input table.")
+        return None
 
     def get_airfield_dimension(self, airfield_layer, airfield_name, dimension_field):
         where_clause = f"AFLD_NAME = '{airfield_name}'"
