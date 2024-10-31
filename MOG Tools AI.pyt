@@ -549,141 +549,65 @@ class CalculateMaximumOnGround(object):
         return interior_taxi_width, peripheral_taxi_width
 
     def calculate_parking_available(self, apron_length, apron_width, aircraft_length, aircraft_wingspan, buffer_distance, max_per_row):
-        # Calculate the taxiway dimensions based on the aircraft specifications
-        if aircraft_wingspan >= 110:  # Condition for larger aircraft
-            interior_taxi_width = 30 + aircraft_wingspan + 30  # Example calculation for larger aircraft
-        else:
-            interior_taxi_width = 20 + aircraft_wingspan + 20  # Example calculation for smaller aircraft
+        # Calculate the number of rows and columns available for parking
+        rows = int(apron_length / (aircraft_length + buffer_distance))
+        cols = int(apron_width / (aircraft_wingspan + buffer_distance))
 
-        peripheral_taxi_width = 50 + (aircraft_wingspan / 2) + 37.5  # Peripheral Taxi Width
-        wingtip_between_parked = 25  # Space between parked aircraft
+        # Ensure the number of columns does not exceed the maximum per row
+        cols = min(cols, max_per_row)
 
-        # I. Standard apron (Width = apron_width, Length = apron_length)
-        # 1) Determine # rows
-        available_length = apron_length
-        num_rows = math.floor((available_length + interior_taxi_width) / (aircraft_length + interior_taxi_width))
+        # Calculate the total number of parking spots available
+        total_parking_spots = rows * cols
 
-        # Ensure at least one row is available
-        if num_rows <= 0:
-            arcpy.AddError("Insufficient length for parking any aircraft.")
-            return 0
-
-        # Print the number of rows
-        arcpy.AddMessage(f"Standard Configuration - Available Length: {available_length}, Interior Taxi Width: {interior_taxi_width}, Aircraft Length: {aircraft_length}")
-        arcpy.AddMessage(f"Calculated Rows: {num_rows}")
-
-        # 2) Determine # Cols
-        available_width = max(0, apron_width - peripheral_taxi_width)
-        num_cols = math.floor((available_width + wingtip_between_parked) / (aircraft_wingspan + wingtip_between_parked))
-
-        # Ensure at least one column is available
-        if num_cols <= 0:
-            arcpy.AddError("Insufficient width for parking any aircraft.")
-            return 0
-
-        # Print the number of columns
-        arcpy.AddMessage(f"Standard Configuration - Available Width: {available_width}, Wingtip Between Parked: {wingtip_between_parked}, Aircraft Wingspan: {aircraft_wingspan}")
-        arcpy.AddMessage(f"Calculated Columns: {num_cols}")
-
-        # 3) Parking Available I
-        parking_available_I = num_rows * num_cols
-
-        # II) Rotated configuration (Width=Length, Length=Width)
-        # 1) Determine # Rows for rotated configuration
-        available_length_rotated = apron_width
-        num_rows_rotated = math.floor((available_length_rotated + interior_taxi_width) / (aircraft_length + interior_taxi_width))
-
-        # Ensure at least one row is available in rotated configuration
-        if num_rows_rotated <= 0:
-            arcpy.AddError("Insufficient length for parking any aircraft in rotated configuration.")
-            return max(parking_available_I, 0)
-
-        # Print the number of rows for rotated configuration
-        arcpy.AddMessage(f"Rotated Configuration - Available Length: {available_length_rotated}, Interior Taxi Width: {interior_taxi_width}, Aircraft Length: {aircraft_length}")
-        arcpy.AddMessage(f"Calculated Rotated Rows: {num_rows_rotated}")
-
-        # 2) Determine # Cols for rotated configuration
-        available_width_rotated = max(0, apron_length - peripheral_taxi_width)
-        num_cols_rotated = math.floor((available_width_rotated + wingtip_between_parked) / (aircraft_wingspan + wingtip_between_parked))
-
-        # Ensure at least one column is available in rotated configuration
-        if num_cols_rotated <= 0:
-            arcpy.AddError("Insufficient width for parking any aircraft in rotated configuration.")
-            return max(parking_available_I, 0)
-
-        # Print the number of columns for rotated configuration
-        arcpy.AddMessage(f"Rotated Configuration - Available Width: {available_width_rotated}, Wingtip Between Parked: {wingtip_between_parked}, Aircraft Wingspan: {aircraft_wingspan}")
-        arcpy.AddMessage(f"Calculated Rotated Columns: {num_cols_rotated}")
-
-        # 3) Parking Available II
-        parking_available_II = num_rows_rotated * num_cols_rotated
-
-        # III) Final Parking Available
-        final_parking_available = max(parking_available_I, parking_available_II)
-
-        # Print final parking available
-        arcpy.AddMessage(f"Final Parking Available: {final_parking_available}")
-
-        return final_parking_available
+        return total_parking_spots
 
     def execute(self, parameters, messages):
         aircraft_table = parameters[0].valueAsText
         airfield_layer = parameters[1].valueAsText
         airfield_name = parameters[2].valueAsText
-        selected_aircraft = parameters[3].valueAsText.split(';')
+        selected_aircraft = parameters[3].valueAsText
         enable_advanced_settings = parameters[4].value
-
-        # Check for manual airfield dimensions
-        manual_length = parameters[5].value
-        manual_width = parameters[6].value
-        manual_interior_taxi_width = parameters[7].value
-        manual_peripheral_taxi_width = parameters[8].value
+        manual_length = parameters[5].valueAsText
+        manual_width = parameters[6].valueAsText
+        manual_interior_taxi_width = parameters[7].valueAsText
+        manual_peripheral_taxi_width = parameters[8].valueAsText
         buffer_distance = float(parameters[9].valueAsText)
         max_per_row = int(parameters[10].valueAsText)
 
-        # Use manual inputs if provided, otherwise use defaults
-        if manual_length is not None:
-            apron_length = float(manual_length)
-        else:
-            # Retrieve apron length from airfield data
-            apron_length = self.get_airfield_dimension(airfield_layer, airfield_name, "LENGTH")
-
-        if manual_width is not None:
-            apron_width = float(manual_width)
-        else:
-            # Retrieve apron width from airfield data
-            apron_width = self.get_airfield_dimension(airfield_layer, airfield_name, "WIDTH")
-
-        # Enable advanced settings if the checkbox is checked
-        if enable_advanced_settings:
-            if manual_interior_taxi_width is not None:
-                interior_taxi_width = float(manual_interior_taxi_width)
+        try:
+            # Get airfield dimensions
+            if enable_advanced_settings and manual_length and manual_width:
+                apron_length = float(manual_length)
+                apron_width = float(manual_width)
             else:
-                interior_taxi_width = None  # Will be calculated based on aircraft dimensions
+                apron_length = self.get_airfield_dimension(airfield_layer, airfield_name, "LENGTH")
+                apron_width = self.get_airfield_dimension(airfield_layer, airfield_name, "WIDTH")
 
-            if manual_peripheral_taxi_width is not None:
-                peripheral_taxi_width = float(manual_peripheral_taxi_width)
-            else:
-                peripheral_taxi_width = None  # Will be calculated based on aircraft dimensions
-        else:
-            interior_taxi_width = None  # Will be calculated based on aircraft dimensions
-            peripheral_taxi_width = None  # Will be calculated based on aircraft dimensions
+            # Get aircraft dimensions
+            aircraft_data = self.get_aircraft_data(aircraft_table, selected_aircraft)
+            if not aircraft_data:
+                arcpy.AddError(f"Aircraft {selected_aircraft} not found in the input table.")
+                return
 
-        # Get aircraft dimensions (assuming you have a method to retrieve these)
-        aircraft_data = self.get_aircraft_data(aircraft_table, selected_aircraft)
-        for mds, length, wingspan, _ in aircraft_data:
-            # Calculate taxiway widths based on aircraft dimensions if not manually provided
-            if interior_taxi_width is None or peripheral_taxi_width is None:
-                interior_taxi_width, peripheral_taxi_width = self.calculate_taxiway_widths(length, wingspan)
+            for mds, length, wingspan, _ in aircraft_data:
+                # Calculate taxiway widths based on aircraft dimensions if not manually provided
+                if manual_interior_taxi_width and manual_peripheral_taxi_width:
+                    interior_taxi_width = float(manual_interior_taxi_width)
+                    peripheral_taxi_width = float(manual_peripheral_taxi_width)
+                else:
+                    interior_taxi_width, peripheral_taxi_width = self.calculate_taxiway_widths(length, wingspan)
 
-            # Assuming a fixed wingtip clearance for parked aircraft
-            wingtip_between_parked = 25  # Adjust as necessary based on your requirements
+                # Assuming a fixed wingtip clearance for parked aircraft
+                wingtip_between_parked = 25  # Adjust as necessary based on your requirements
 
-            # Calculate parking available for each aircraft
-            parking_available = self.calculate_parking_available(apron_length, apron_width, length, wingspan, buffer_distance, max_per_row)
-            arcpy.AddMessage(f"Parking available for {mds}: {parking_available}")
+                # Calculate parking available for each aircraft
+                parking_available = self.calculate_parking_available(apron_length, apron_width, length, wingspan, buffer_distance, max_per_row)
+                arcpy.AddMessage(f"Parking available for {mds}: {parking_available}")
 
-        # Continue with the rest of the execution logic...
+        except Exception as e:
+            arcpy.AddError(f"An error occurred: {str(e)}")
+            arcpy.AddError(arcpy.GetMessages())
+            arcpy.AddError(traceback.format_exc())
 
     def get_aircraft_data(self, aircraft_table, selected_aircraft):
         aircraft_data = []
@@ -700,6 +624,6 @@ class CalculateMaximumOnGround(object):
         where_clause = f"AFLD_NAME = '{airfield_name}'"
         with arcpy.da.SearchCursor(airfield_layer, [dimension_field], where_clause) as cursor:
             for row in cursor:
-                return float(row[0]) if row[0] is not None else 0
+                return row[0]
         arcpy.AddError(f"Airfield '{airfield_name}' not found or dimension '{dimension_field}' not available.")
-        return 0
+        return None
