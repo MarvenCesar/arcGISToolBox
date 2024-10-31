@@ -7,6 +7,7 @@ import math
 import traceback
 import re
 
+
 class MultipleObjects(Exception):
     pass
 
@@ -126,16 +127,6 @@ class CalculateMaximumOnGround(object):
         if parameters[1].altered and not parameters[1].hasBeenValidated:
             airfield_layer_object = parameters[1].value
             airfield_layer_object_name = parameters[1].valueAsText
-            if airfield_layer_object:
-                object_count = arcpy.management.GetCount(airfield_layer_object) # Check if more than one object is selected
-                try:
-                    if int(object_count[0]) == 1:
-                        arcpy.AddMessage
-                        arcpy.AddMessage(f"Selected airfield: {airfield_layer_object}")
-                    else:
-                        raise MultipleObjects(object_count)
-                except MultipleObjects:
-                    print(f"{airfield_layer_object_name} has multiple features. Please select one.")
 
             # Check if the original airfield_layer_object has more than 4 vertices
             vertex_count = 0
@@ -227,7 +218,8 @@ class CalculateMaximumOnGround(object):
         self.display_results(result, apron_length, apron_width, apron_lcn,
                              interior_taxi_width, peripheral_taxi_width, wingtip_clearance)
         
-        self.create_aircraft_layer(airfield_layer_object, airfield_layer_object_origin, aircraft_data, result, out_fc, wingtip_clearance, interior_taxi_width)
+        # Create resulting asircraft footprint layer represented by objects
+        self.create_aircraft_layer(airfield_layer_object, airfield_layer_object_origin, parameters[1].valueAsText, aircraft_data, result, out_fc, wingtip_clearance, interior_taxi_width)
 
     def get_airfield_data(self, airfield_layer_object):
         
@@ -480,9 +472,10 @@ class CalculateMaximumOnGround(object):
         return [max(min_count, gene + random.randint(-1, 1)) if random.random() < mutation_rate else gene 
                 for gene, min_count in zip(individual, min_counts)]
 
-    def create_aircraft_layer(self, airfield_layer_object, airfield_layer_object_origin, aircraft_data, mog_result, out_fc, wingtip_clearance, interior_taxi_width):
+    def create_aircraft_layer(self, airfield_layer_object, airfield_layer_object_origin, airfield_layer_object_name, aircraft_data, mog_result, out_fc, wingtip_clearance, interior_taxi_width):
 
         try:
+
             # Validate and create output feature class
             workspace = os.path.dirname(out_fc)
             valid_name = arcpy.ValidateTableName(os.path.basename(out_fc), workspace)
@@ -501,9 +494,53 @@ class CalculateMaximumOnGround(object):
             x_start = airfield_layer_object_origin.X
             y_start = airfield_layer_object_origin.Y
 
+            # Generalize the airfield layer to reduce the number of points
+            vertex_count = 0
+            with arcpy.da.SearchCursor(airfield_layer_object, ["SHAPE@"]) as cursor:
+                for row in cursor:
+                    for part in row[0]:
+                        vertex_count += len(part)
+
+            if vertex_count > 4:
+                # Create a copy of the airfield_layer_object as a new feature class
+                workspace = os.path.dirname(arcpy.Describe(airfield_layer_object).catalogPath)
+                valid_name = arcpy.ValidateTableName(airfield_layer_object_name + "_generalized", workspace)
+                airfield_layer_object_generalized = os.path.join(workspace, valid_name)
+                sr = arcpy.Describe(airfield_layer_object).spatialReference
+                arcpy.management.CreateFeatureclass(workspace, valid_name, "POLYGON", spatial_reference=sr)
+
+                # Copy all data from the original to the new feature class
+                arcpy.management.CopyFeatures(airfield_layer_object, airfield_layer_object_generalized)
+
+                # Generalize the copied feature class
+                arcpy.edit.Generalize(airfield_layer_object_generalized, "10 Feet")
+            else:
+                airfield_layer_object_generalized = airfield_layer_object
+
+            # Determine the second vertex (next-closest vertex)
+            second_vertex = None
+            min_distance = float('inf')
+            with arcpy.da.SearchCursor(airfield_layer_object_generalized, ["SHAPE@"]) as cursor:
+                for row in cursor:
+                    for part in row[0]:
+                        for point in part:
+                            if point and (point.X != x_start or point.Y != y_start):
+                                distance = math.sqrt((point.X - x_start) ** 2 + (point.Y - y_start) ** 2)
+                                if distance < min_distance:
+                                    min_distance = distance
+                                    second_vertex = point
+
+            if not second_vertex:
+                raise ValueError("Could not determine the second vertex for alignment.")
+
+            # Calculate the angle between the origin vertex and the second vertex
+            dx = second_vertex.X - x_start
+            dy = second_vertex.Y - y_start
+            angle = math.degrees(math.atan2(dy, dx))
+
             # Process the selected aircraft
             for row in aircraft_data:
-                mds, length, wingspan, aicraft_lcn = row
+                mds, length, wingspan, aircraft_lcn = row
 
                 length = float(length) if length is not None else 0
                 wingspan = float(wingspan) if wingspan is not None else 0
@@ -511,14 +548,11 @@ class CalculateMaximumOnGround(object):
                 length_in_degrees = length / 364000  # Approximate conversion from feet to degrees latitude
                 wingspan_in_degrees = wingspan / 364000
 
-                x_start += wingspan_in_degrees / 2
-                y_start += length_in_degrees / 2
-
                 result_tuple = next((item for item in mog_result if item[0] == mds), None)
                 if result_tuple is None:
                     arcpy.AddMessage(f"No result found for MDS: {mds}")
                     continue
-                
+
                 quantity = result_tuple[1]
                 max_rows = result_tuple[2]
                 max_per_row = result_tuple[3]
@@ -531,26 +565,27 @@ class CalculateMaximumOnGround(object):
                     col_index = 0
 
                     while points_placed < quantity:
-                        x = x_start + (col_index * (wingspan_in_degrees + wingtip_clearance / 364000))
-                        y = y_start + (row_index * (length_in_degrees + interior_taxi_width / 364000))
+                        # Calculate the rotated coordinates
+                        x_offset = col_index * (wingspan_in_degrees + wingtip_clearance / 364000)
+                        y_offset = row_index * (length_in_degrees + interior_taxi_width / 364000)
+                        x_rot = x_start + x_offset * math.cos(math.radians(angle)) - y_offset * math.sin(math.radians(angle))
+                        y_rot = y_start + x_offset * math.sin(math.radians(angle)) + y_offset * math.cos(math.radians(angle))
 
                         # Create the aircraft shape
-                        aircraft_shapes = self.create_aircraft_shape(x, y, length_in_degrees, wingspan_in_degrees)
+                        aircraft_shapes = self.create_aircraft_shape(x_rot, y_rot, length_in_degrees, wingspan_in_degrees, angle)
 
                         # Create the polygon
                         polygon = arcpy.Polygon(arcpy.Array(aircraft_shapes), sr)
                         insert_cursor.insertRow([polygon, mds, length, wingspan, length * wingspan])
                         points_placed += 1
 
-                        arcpy.AddMessage(f"Placed {mds} at ({x_start}, {y_start}) - {points_placed}/{quantity}")
+                        arcpy.AddMessage(f"Placed {mds} at ({x_rot}, {y_rot}) - {points_placed}/{quantity}")
 
                         # Move to the next column or row
                         col_index += 1
                         if col_index >= max_per_row:
                             col_index = 0
                             row_index += 1
-                            
-                y_start += interior_taxi_width / 364000
 
             arcpy.AddMessage(f"Aircraft polygons created in {out_fc}")
 
@@ -559,43 +594,49 @@ class CalculateMaximumOnGround(object):
             arcpy.AddError(arcpy.GetMessages())
             arcpy.AddError(traceback.format_exc())
 
-    def create_aircraft_shape(self, x_start, y_start, length, wingspan):
-        # Define proportions
-        fuselage_width = length * 0.1
-        nose_length = length * 0.2
-        tail_length = length * 0.15
-        wing_sweep = length * 0.1
-        tail_sweep = length * 0.05
-
+    def create_aircraft_shape(self, x_start, y_start, length, wingspan, angle):
+        # Define the corners of the rectangle representing the aircraft footprint
         corners = [
-            arcpy.Point(x_start, y_start + length/2),  # Nose tip
-            arcpy.Point(x_start - fuselage_width/2, y_start + length/2 - nose_length),  # Nose left
-            arcpy.Point(x_start - wingspan/2, y_start + wing_sweep),  # Left wingtip front
-            arcpy.Point(x_start - wingspan/2, y_start),  # Left wingtip middle
-            arcpy.Point(x_start - wingspan/2, y_start - wing_sweep),  # Left wingtip rear
-            arcpy.Point(x_start - fuselage_width/2, y_start - length/2 + tail_length),  # Fuselage left before tail
-            arcpy.Point(x_start - wingspan/4, y_start - length/2),  # Left tail tip
-            arcpy.Point(x_start, y_start - length/2 - tail_sweep),  # Tail bottom tip
-            arcpy.Point(x_start + wingspan/4, y_start - length/2),  # Right tail tip
-            arcpy.Point(x_start + fuselage_width/2, y_start - length/2 + tail_length),  # Fuselage right before tail
-            arcpy.Point(x_start + wingspan/2, y_start - wing_sweep),  # Right wingtip rear
-            arcpy.Point(x_start + wingspan/2, y_start),  # Right wingtip middle
-            arcpy.Point(x_start + wingspan/2, y_start + wing_sweep),  # Right wingtip front
-            arcpy.Point(x_start + fuselage_width/2, y_start + length/2 - nose_length),  # Nose right
-            arcpy.Point(x_start, y_start + length/2)  # Back to nose tip
+            arcpy.Point(x_start, y_start),  # Bottom-left corner
+            arcpy.Point(x_start + wingspan, y_start),  # Bottom-right corner
+            arcpy.Point(x_start + wingspan, y_start + length),  # Top-right corner
+            arcpy.Point(x_start, y_start + length),  # Top-left corner
+            arcpy.Point(x_start, y_start)  # Back to bottom-left corner to close the polygon
         ]
 
-        # Rotate the aircraft shape based on the angle
-        # angle_rad = math.radians(angle)
-        # cos_angle = math.cos(angle_rad)
-        # sin_angle = math.sin(angle_rad)
+        # Rotate the corners by the angle
+        angle_rad = math.radians(angle)
+        rotated_corners = []
+        for corner in corners:
+            x_rot = x_start + (corner.X - x_start) * math.cos(angle_rad) - (corner.Y - y_start) * math.sin(angle_rad)
+            y_rot = y_start + (corner.X - x_start) * math.sin(angle_rad) + (corner.Y - y_start) * math.cos(angle_rad)
+            rotated_corners.append(arcpy.Point(x_rot, y_rot))
 
-        # rotated_corners = []
-        # for corner in corners:
-        #     x_shifted = corner.X - x_start
-        #     y_shifted = corner.Y - y_start
-        #     x_rotated = x_shifted * cos_angle - y_shifted * sin_angle
-        #     y_rotated = x_shifted * sin_angle + y_shifted * cos_angle
-        #     rotated_corners.append(arcpy.Point(x_start + x_rotated, y_start + y_rotated))
+        return rotated_corners
+
+        # Define proportions
+        # fuselage_width = length * 0.1
+        # nose_length = length * 0.2
+        # tail_length = length * 0.15
+        # wing_sweep = length * 0.1
+        # tail_sweep = length * 0.05
+
+        # corners = [
+        #     arcpy.Point(x_start, y_start + length/2),  # Nose tip
+        #     arcpy.Point(x_start - fuselage_width/2, y_start + length/2 - nose_length),  # Nose left
+        #     arcpy.Point(x_start - wingspan/2, y_start + wing_sweep),  # Left wingtip front
+        #     arcpy.Point(x_start - wingspan/2, y_start),  # Left wingtip middle
+        #     arcpy.Point(x_start - wingspan/2, y_start - wing_sweep),  # Left wingtip rear
+        #     arcpy.Point(x_start - fuselage_width/2, y_start - length/2 + tail_length),  # Fuselage left before tail
+        #     arcpy.Point(x_start - wingspan/4, y_start - length/2),  # Left tail tip
+        #     arcpy.Point(x_start, y_start - length/2 - tail_sweep),  # Tail bottom tip
+        #     arcpy.Point(x_start + wingspan/4, y_start - length/2),  # Right tail tip
+        #     arcpy.Point(x_start + fuselage_width/2, y_start - length/2 + tail_length),  # Fuselage right before tail
+        #     arcpy.Point(x_start + wingspan/2, y_start - wing_sweep),  # Right wingtip rear
+        #     arcpy.Point(x_start + wingspan/2, y_start),  # Right wingtip middle
+        #     arcpy.Point(x_start + wingspan/2, y_start + wing_sweep),  # Right wingtip front
+        #     arcpy.Point(x_start + fuselage_width/2, y_start + length/2 - nose_length),  # Nose right
+        #     arcpy.Point(x_start, y_start + length/2)  # Back to nose tip
+        # ]
 
         return corners
