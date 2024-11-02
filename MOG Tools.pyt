@@ -198,29 +198,16 @@ class CalculateAircraftFootprint(object):
         return
 
     def create_aircraft_shape(self, x_start, y_start, length, wingspan):
-        # Define proportions for the aircraft shape
-        fuselage_width = length * 0.1
-        nose_length = length * 0.2
-        tail_length = length * 0.15
-        wing_sweep = length * 0.1
-        tail_sweep = length * 0.05
+        # Create a rectangle representing the aircraft
+        half_length = length / 2
+        half_wingspan = wingspan / 2
 
         corners = [
-            arcpy.Point(x_start, y_start + length / 2),  # Nose tip
-            arcpy.Point(x_start - fuselage_width / 2, y_start + length / 2 - nose_length),  # Nose left
-            arcpy.Point(x_start - wingspan / 2, y_start + wing_sweep),  # Left wingtip front
-            arcpy.Point(x_start - wingspan / 2, y_start),  # Left wingtip middle
-            arcpy.Point(x_start - wingspan / 2, y_start - wing_sweep),  # Left wingtip rear
-            arcpy.Point(x_start - fuselage_width / 2, y_start - length / 2 + tail_length),  # Fuselage left before tail
-            arcpy.Point(x_start - wingspan / 4, y_start - length / 2),  # Left tail tip
-            arcpy.Point(x_start, y_start - length / 2 - tail_sweep),  # Tail bottom tip
-            arcpy.Point(x_start + wingspan / 4, y_start - length / 2),  # Right tail tip
-            arcpy.Point(x_start + fuselage_width / 2, y_start - length / 2 + tail_length),  # Fuselage right before tail
-            arcpy.Point(x_start + wingspan / 2, y_start - wing_sweep),  # Right wingtip rear
-            arcpy.Point(x_start + wingspan / 2, y_start),  # Right wingtip middle
-            arcpy.Point(x_start + wingspan / 2, y_start + wing_sweep),  # Right wingtip front
-            arcpy.Point(x_start + fuselage_width / 2, y_start + length / 2 - nose_length),  # Nose right
-            arcpy.Point(x_start, y_start + length / 2)  # Back to nose tip
+            arcpy.Point(x_start - half_wingspan, y_start + half_length),  # Top-left corner
+            arcpy.Point(x_start + half_wingspan, y_start + half_length),  # Top-right corner
+            arcpy.Point(x_start + half_wingspan, y_start - half_length),  # Bottom-right corner
+            arcpy.Point(x_start - half_wingspan, y_start - half_length),  # Bottom-left corner
+            arcpy.Point(x_start - half_wingspan, y_start + half_length)   # Back to top-left corner
         ]
         return corners
 
@@ -297,7 +284,7 @@ class CalculateAircraftFootprint(object):
                                 x_start = start_lon + (col_index * (wingspan_in_degrees + buffer_distance / 364000))
                                 y_start = start_lat + (row_index * (length_in_degrees + buffer_distance / 364000))
 
-                                # Create the aircraft shape
+                                # Create the aircraft rectangle
                                 corners = self.create_aircraft_shape(x_start, y_start, length_in_degrees, wingspan_in_degrees)
 
                                 # Create the polygon
@@ -401,7 +388,14 @@ class CalculateMaximumOnGround(object):
             # Output Aircraft Positions Feature Class
             arcpy.Parameter(
                 displayName="Output Aircraft Positions",
-                name="out_fc",
+                name="out_aircraft_fc",
+                datatype="DEFeatureClass",
+                parameterType="Required",
+                direction="Output"),
+            # Output Constraint Polygons Feature Class
+            arcpy.Parameter(
+                displayName="Output Constraint Polygons",
+                name="out_constraint_fc",
                 datatype="DEFeatureClass",
                 parameterType="Required",
                 direction="Output"),
@@ -540,7 +534,8 @@ class CalculateMaximumOnGround(object):
         manual_width = parameters[6].value
         manual_interior_taxi_width = parameters[7].value
         manual_peripheral_taxi_width = parameters[8].value
-        out_fc = parameters[9].valueAsText
+        out_aircraft_fc = parameters[9].valueAsText  # Output Aircraft Feature Class
+        out_constraint_fc = parameters[10].valueAsText  # Output Constraint Feature Class
 
         try:
             # Get the spatial reference of the airfield layer
@@ -600,7 +595,8 @@ class CalculateMaximumOnGround(object):
             arcpy.AddMessage(f"Using wingtip clearance between parked aircraft: {wingtip_between_parked} ft")
 
             # Calculate parking availability
-            (parking_available, num_rows_standard, num_cols_standard, num_rows_rotated, num_cols_rotated, parking_available_I, parking_available_II) = self.calculate_parking_available(
+            (parking_available, num_rows_standard, num_cols_standard, num_rows_rotated, num_cols_rotated,
+             parking_available_I, parking_available_II) = self.calculate_parking_available(
                 apron_length, apron_width, aircraft_length, aircraft_wingspan)
 
             arcpy.AddMessage(f"Final Parking Available for {mds}: {parking_available}")
@@ -637,14 +633,29 @@ class CalculateMaximumOnGround(object):
             dx_units = dx * unit_factor
             dy_units = dy * unit_factor
 
-            # Create output feature class as points
-            workspace = arcpy.env.workspace or os.path.dirname(out_fc)
-            valid_name = arcpy.ValidateTableName(os.path.basename(out_fc), workspace)
-            out_fc = os.path.join(workspace, valid_name)
-            arcpy.CreateFeatureclass_management(workspace, valid_name, "POINT", spatial_reference=sr)
-            arcpy.AddField_management(out_fc, "MDS", "TEXT")
-            arcpy.AddField_management(out_fc, "AircraftID", "LONG")
-            arcpy.AddField_management(out_fc, "Rotation", "DOUBLE")
+            # Create separate feature classes for aircraft and constraints
+            # Aircraft Feature Class already defined as out_aircraft_fc
+            # Constraint Feature Class defined as out_constraint_fc
+
+            # Ensure feature classes do not already exist. If they do, delete them.
+            for fc in [out_aircraft_fc, out_constraint_fc]:
+                if arcpy.Exists(fc):
+                    arcpy.Delete_management(fc)
+                    arcpy.AddMessage(f"Existing feature class '{fc}' deleted.")
+
+            # Create Aircraft Feature Class
+            arcpy.CreateFeatureclass_management(os.path.dirname(out_aircraft_fc), os.path.basename(out_aircraft_fc), "POLYGON", spatial_reference=sr)
+            # Add necessary fields to Aircraft Feature Class
+            arcpy.AddField_management(out_aircraft_fc, "MDS", "TEXT")
+            arcpy.AddField_management(out_aircraft_fc, "AircraftID", "LONG")
+            arcpy.AddField_management(out_aircraft_fc, "Rotation", "DOUBLE")
+            arcpy.AddField_management(out_aircraft_fc, "Type", "TEXT")  # New field to identify type
+
+            # Create Constraint Feature Class
+            arcpy.CreateFeatureclass_management(os.path.dirname(out_constraint_fc), os.path.basename(out_constraint_fc), "POLYGON", spatial_reference=sr)
+            # Add necessary fields to Constraint Feature Class
+            arcpy.AddField_management(out_constraint_fc, "AircraftID", "LONG")  # To associate with aircraft
+            arcpy.AddField_management(out_constraint_fc, "Type", "TEXT")  # New field to identify type
 
             # Determine the starting point (use airfield centroid)
             start_point = airfield_shape.centroid
@@ -664,27 +675,121 @@ class CalculateMaximumOnGround(object):
             sin_angle = math.sin(angle_rad)
 
             aircraft_id = 1
-            with arcpy.da.InsertCursor(out_fc, ["SHAPE@XY", "MDS", "AircraftID", "Rotation"]) as cursor:
+            aircraft_records = []  # To store aircraft data for constraint creation
+
+            with arcpy.da.InsertCursor(out_aircraft_fc, ["SHAPE@", "MDS", "AircraftID", "Rotation", "Type"]) as aircraft_cursor:
                 for x_local, y_local in grid_points:
                     x_rotated = x_local * cos_angle - y_local * sin_angle
                     y_rotated = x_local * sin_angle + y_local * cos_angle
                     x_global = start_point.X + x_rotated
                     y_global = start_point.Y + y_rotated
 
-                    point = arcpy.Point(x_global, y_global)
+                    # Create aircraft rectangle corners
+                    half_length = (aircraft_length * unit_factor) / 2
+                    half_wingspan = (aircraft_wingspan * unit_factor) / 2
+                    corners = [
+                        arcpy.Point(x_global - half_wingspan, y_global + half_length),
+                        arcpy.Point(x_global + half_wingspan, y_global + half_length),
+                        arcpy.Point(x_global + half_wingspan, y_global - half_length),
+                        arcpy.Point(x_global - half_wingspan, y_global - half_length),
+                        arcpy.Point(x_global - half_wingspan, y_global + half_length)
+                    ]
 
-                    # Check if point is within airfield
-                    if airfield_shape.contains(point):
-                        cursor.insertRow([(point.X, point.Y), mds, aircraft_id, angle % 360])
-                        arcpy.AddMessage(f"Placed {mds} at ({point.X}, {point.Y}) - {aircraft_id}/{parking_available}")
+                    # Create aircraft polygon with rotation
+                    polygon_array = arcpy.Array()
+                    for corner in corners:
+                        # Rotate corner around center point
+                        dx = corner.X - x_global
+                        dy = corner.Y - y_global
+                        rotated_x = x_global + (dx * cos_angle - dy * sin_angle)
+                        rotated_y = y_global + (dx * sin_angle + dy * cos_angle)
+                        polygon_array.add(arcpy.Point(rotated_x, rotated_y))
+
+                    aircraft_polygon = arcpy.Polygon(polygon_array, sr)
+
+                    # Check if aircraft polygon is within airfield
+                    if airfield_shape.contains(aircraft_polygon.centroid):
+                        # Insert aircraft polygon
+                        aircraft_cursor.insertRow([aircraft_polygon, mds, aircraft_id, angle % 360, "Aircraft"])
+                        arcpy.AddMessage(f"Placed {mds} at ({x_global}, {y_global}) - ID: {aircraft_id}/{parking_available}")
+                        # Store aircraft data for constraint creation
+                        aircraft_records.append({
+                            "AircraftID": aircraft_id,
+                            "Centroid": aircraft_polygon.centroid,
+                            "Length": aircraft_length * unit_factor,
+                            "Wingspan": aircraft_wingspan * unit_factor,
+                            "Rotation": angle % 360
+                        })
                         aircraft_id += 1
                     else:
-                        arcpy.AddWarning(f"Aircraft at position ({point.X}, {point.Y}) is outside the airfield boundary.")
+                        arcpy.AddWarning(f"Aircraft at position ({x_global}, {y_global}) is outside the airfield boundary.")
 
-            arcpy.AddMessage(f"Aircraft positions created in {out_fc}, total aircraft placed: {aircraft_id - 1}")
+            arcpy.AddMessage(f"Aircraft positions created in {out_aircraft_fc}, total aircraft placed: {aircraft_id - 1}")
+
+            # After aircraft polygons are created, create constraint polygons
+            self.create_constraint_polygons(out_constraint_fc, sr, aircraft_records)
 
         except Exception as e:
-            arcpy.AddError(f"An error occurred: {str(e)}")
+            arcpy.AddError(f"An error occurred during the MOG calculation: {str(e)}")
+            arcpy.AddError(traceback.format_exc())
+
+    def create_constraint_polygons(self, out_constraint_fc, sr, aircraft_records):
+        """
+        Creates constraint polygons based on the aircraft polygons.
+        Each constraint polygon is a larger rectangle around the aircraft.
+
+        :param out_constraint_fc: Path to the Constraint Feature Class
+        :param sr: Spatial Reference
+        :param aircraft_records: List of dictionaries containing aircraft data
+        """
+        try:
+            with arcpy.da.InsertCursor(out_constraint_fc, ["SHAPE@", "AircraftID", "Type"]) as constraint_cursor:
+                for record in aircraft_records:
+                    aircraft_id = record["AircraftID"]
+                    centroid = record["Centroid"]
+                    length = record["Length"]
+                    wingspan = record["Wingspan"]
+                    rotation = record["Rotation"]  # Get the rotation angle
+
+                    # Define the size of the constraint polygon
+                    clearance_factor = 1.2  # 20% larger
+                    constraint_length = length * clearance_factor
+                    constraint_wingspan = wingspan * clearance_factor
+
+                    # Create constraint rectangle corners (unrotated)
+                    half_length = constraint_length / 2
+                    half_wingspan = constraint_wingspan / 2
+                    corners = [
+                        arcpy.Point(centroid.X - half_wingspan, centroid.Y + half_length),
+                        arcpy.Point(centroid.X + half_wingspan, centroid.Y + half_length),
+                        arcpy.Point(centroid.X + half_wingspan, centroid.Y - half_length),
+                        arcpy.Point(centroid.X - half_wingspan, centroid.Y - half_length),
+                        arcpy.Point(centroid.X - half_wingspan, centroid.Y + half_length)
+                    ]
+
+                    # Rotate corners around the centroid
+                    angle_rad = math.radians(rotation)
+                    cos_angle = math.cos(angle_rad)
+                    sin_angle = math.sin(angle_rad)
+                    rotated_corners = []
+                    for corner in corners:
+                        dx = corner.X - centroid.X
+                        dy = corner.Y - centroid.Y
+                        rotated_x = centroid.X + (dx * cos_angle - dy * sin_angle)
+                        rotated_y = centroid.Y + (dx * sin_angle + dy * cos_angle)
+                        rotated_corners.append(arcpy.Point(rotated_x, rotated_y))
+
+                    # Create constraint polygon with rotation
+                    constraint_polygon = arcpy.Polygon(arcpy.Array(rotated_corners), sr)
+
+                    # Insert constraint polygon
+                    constraint_cursor.insertRow([constraint_polygon, aircraft_id, "Constraint"])
+                    arcpy.AddMessage(f"Constraint polygon created for Aircraft ID: {aircraft_id}")
+
+            arcpy.AddMessage(f"Constraint polygons created in {out_constraint_fc}")
+
+        except Exception as e:
+            arcpy.AddError(f"An error occurred while creating constraint polygons: {str(e)}")
             arcpy.AddError(traceback.format_exc())
 
     def get_aircraft_data(self, aircraft_table, selected_aircraft):
@@ -703,4 +808,3 @@ class CalculateMaximumOnGround(object):
                 return float(row[0])  # Return the requested dimension as float
         arcpy.AddError(f"Airfield '{airfield_name}' not found or dimension '{dimension_field}' not available.")
         return None  # Return None if not found
-
