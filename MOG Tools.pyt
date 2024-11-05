@@ -1,642 +1,504 @@
-# -*- coding: utf-8 -*-
-import random
 import arcpy
 import pandas as pd
 import os
 import math
 import traceback
-import re
-
-
-class MultipleObjects(Exception):
-    pass
+import random
 
 class Toolbox(object):
     def __init__(self):
         self.label = "Aircraft MOG Optimization"
         self.alias = "AircraftMOG"
-        self.tools = [CalculateMaximumOnGround]
+        self.tools = [CalculateMaximumOnGround] # ImportAircraftData, CalculateAircraftFootprint, 
 
 class CalculateMaximumOnGround(object):
     def __init__(self):
         self.label = "Calculate Maximum On Ground"
-        self.description = "Calculates the maximum number of aircraft that can be parked on an airfield."
+        self.description = "Calculates the maximum number of aircraft that can be parked on an airfield, with optional manual input of airfield dimensions and taxiway widths."
         self.canRunInBackground = False
-        self.optimization_attempts = 20
-        self.aircraft_data = None  # Add this line
 
     def getParameterInfo(self):
         params = [
-            arcpy.Parameter( # 0
+            # Input Aircraft Table
+            arcpy.Parameter(
                 displayName="Input Aircraft Table",
-                name="in_table",
+                name="aircraft_table",
                 datatype="GPTableView",
                 parameterType="Required",
                 direction="Input"),
-            arcpy.Parameter( # 1
+            # Airfield Layer
+            arcpy.Parameter(
                 displayName="Airfield Layer",
                 name="airfield_layer",
                 datatype="GPFeatureLayer",
                 parameterType="Required",
                 direction="Input"),
-            arcpy.Parameter( # 2
-                displayName="Origin Point",
-                name="origin_point",
-                datatype="GPString",
-                parameterType="Optional",
-                direction="Input"),
-            arcpy.Parameter( # 3
-                displayName="Interior Taxiway Width (ft)",
-                name="interior_taxi_width",
-                datatype="GPDouble",
-                parameterType="Required",
-                direction="Input"),
-            arcpy.Parameter( # 4
-                displayName="Peripheral Taxiway Width (ft)",
-                name="peripheral_taxi_width",
-                datatype="GPDouble",
-                parameterType="Required",
-                direction="Input"),
-            arcpy.Parameter( # 5
-                displayName="Aircraft Wingtip Clearance (ft)",
-                name="wingtip_clearance",
-                datatype="GPDouble",
-                parameterType="Required",
-                direction="Input"),
-            arcpy.Parameter( # 6
+            # Airfield Name
+            # arcpy.Parameter(
+            #     displayName="Airfield Name",
+            #     name="airfield_name",
+            #     datatype="GPString",
+            #     parameterType="Required",
+            #     direction="Input"),
+            # Select Aircraft (MDS)
+            arcpy.Parameter(
                 displayName="Select Aircraft (MDS)",
                 name="selected_aircraft",
                 datatype="GPString",
                 parameterType="Required",
-                direction="Input",
-                multiValue=True),
-            arcpy.Parameter( # 7
-                displayName="Aircraft Quantities (Comma Separated)",
-                name="aircraft_quantities",
-                datatype="GPString",
-                parameterType="Optional",
                 direction="Input"),
-            arcpy.Parameter( # 8
-                displayName="Apply LCN Compatibility?",
-                name="apply_lcn",
+            # Enable Advanced Settings
+            arcpy.Parameter(
+                displayName="Enable Advanced Settings",
+                name="enable_advanced_settings",
                 datatype="GPBoolean",
                 parameterType="Optional",
                 direction="Input"),
-            arcpy.Parameter( # 9
-                displayName="Optimize Quantities",
-                name="optimize_quantities",
-                datatype="GPBoolean",
+            # Manual Airfield Length (ft)
+            arcpy.Parameter(
+                displayName="Manual Airfield Length (ft)",
+                name="manual_length",
+                datatype="GPDouble",
                 parameterType="Optional",
                 direction="Input"),
-            arcpy.Parameter( # 10
-                displayName="Minimum Aircraft Quantities (Comma Separated)",
-                name="min_quantities",
-                datatype="GPString",
+            # Manual Airfield Width (ft)
+            arcpy.Parameter(
+                displayName="Manual Airfield Width (ft)",
+                name="manual_width",
+                datatype="GPDouble",
                 parameterType="Optional",
-                direction="Input",
-                enabled=False),
-            arcpy.Parameter( # 11
-                displayName="Number of Optimization Attempts",
-                name="optimization_attempts",
-                datatype="GPLong",
+                direction="Input"),
+            # Manual Interior Taxiway Width (ft)
+            arcpy.Parameter(
+                displayName="Manual Interior Taxiway Width (ft)",
+                name="manual_interior_taxi_width",
+                datatype="GPDouble",
                 parameterType="Optional",
-                direction="Input",
-                enabled=False),
-            arcpy.Parameter( # 12
-                displayName="Output Feature Class",
-                name="out_fc",
+                direction="Input"),
+            # Manual Peripheral Taxiway Width (ft)
+            arcpy.Parameter(
+                displayName="Manual Peripheral Taxiway Width (ft)",
+                name="manual_peripheral_taxi_width",
+                datatype="GPDouble",
+                parameterType="Optional",
+                direction="Input"),
+            # Output Aircraft Positions Feature Class
+            arcpy.Parameter(
+                displayName="Output Aircraft Positions",
+                name="out_aircraft_fc",
                 datatype="DEFeatureClass",
                 parameterType="Required",
-                direction="Output")
+                direction="Output"),
+            # Output Constraint Polygons Feature Class
+            arcpy.Parameter(
+                displayName="Output Constraint Polygons",
+                name="out_constraint_fc",
+                datatype="DEFeatureClass",
+                parameterType="Required",
+                direction="Output"),
         ]
-        params[1].filter.list = ["Polygon"]
-        params[2].parameterDependencies = [params[1].name]
-        params[6].parameterDependencies = [params[0].name]
-        params[9].value = False  # Default to not optimizing
-        params[11].value = 20  # Use class attribute for default
+
+        # Disable advanced settings parameters by default
+        for param in params[4:8]:
+            param.enabled = False
+
         return params
 
     def updateParameters(self, parameters):
-
-        if parameters[0].altered and not parameters[0].hasBeenValidated:
+        # Populate the Aircraft Name (MDS) dropdown
+        if parameters[0].altered or not parameters[2].altered:
             aircraft_table = parameters[0].valueAsText
             if aircraft_table:
-                aircraft_names = [row[0] for row in arcpy.da.SearchCursor(aircraft_table, "MDS") if row[0]] # Check if row[0] is valid and not <Null>. If <null>, filter.list breaks
-                parameters[6].filter.list = aircraft_names
-        
-        if parameters[1].altered and not parameters[1].hasBeenValidated:
-            airfield_layer_object = parameters[1].value
-            airfield_layer_object_name = parameters[1].valueAsText
+                try:
+                    aircraft_names = [row[0] for row in arcpy.da.SearchCursor(aircraft_table, "MDS") if row[0]] # Check if row[0] is valid and not <Null>. If <null>, filter.list breaks
+                    parameters[2].filter.list = aircraft_names
+                except Exception as e:
+                    arcpy.AddError(f"Error loading aircraft names: {e}")
 
-            # Check if the original airfield_layer_object has more than 4 vertices
-            vertex_count = 0
-            with arcpy.da.SearchCursor(airfield_layer_object, ["SHAPE@"]) as cursor:
-                for row in cursor:
-                    for part in row[0]:
-                        vertex_count += len(part)
+        enable_advanced_settings = parameters[3].value
+        for param in parameters[4:8]:
+            param.enabled = enable_advanced_settings
 
-            if vertex_count > 4:
-                # Create a copy of the airfield_layer_object as a new feature class
-                workspace = os.path.dirname(arcpy.Describe(airfield_layer_object).catalogPath)
-                valid_name = arcpy.ValidateTableName(airfield_layer_object_name + "_generalized", workspace)
-                airfield_layer_object_generalized = os.path.join(workspace, valid_name)
-                sr = arcpy.Describe(airfield_layer_object).spatialReference
-                arcpy.management.CreateFeatureclass(workspace, valid_name, "POLYGON", spatial_reference=sr)
+        return
 
-                # Copy all data from the original to the new feature class
-                arcpy.management.CopyFeatures(airfield_layer_object, airfield_layer_object_generalized)
+    def calculate_taxiway_widths(self, aircraft_length, aircraft_wingspan):
+        # Initialize taxiway widths
+        interior_taxi_width = 0
+        peripheral_taxi_width = 0
 
-                # Generalize the copied feature class
-                arcpy.edit.Generalize(airfield_layer_object_generalized, "10 Feet")
-            else:
-                airfield_layer_object_generalized = airfield_layer_object
+        # Wingspan is assumed to be in feet
+        wingspan_ft = aircraft_wingspan
 
-            # Proceed with gathering the points from the generalized feature class
-            points_list = []
-            for polygon in arcpy.da.SearchCursor(airfield_layer_object_generalized, ["SHAPE@"]):
-                for part in polygon[0].getPart():
-                    i_point = 0
-                    for point in part:
-                        if point:
-                            i_point += 1
-                            points_list.append(f"{i_point}: X: {point.X}, Y: {point.Y}")
-                        else:
-                            break # Break is needed to ensure no inner rings
+        # Determine taxiway widths based on wingspan
+        if wingspan_ft >= 110:  # Aircraft with wingspan >= 110 ft
+            peripheral_taxi_width = 50  # Wingtip clearance for moving aircraft on peripheral
+            interior_taxi_width = 30 + 30  # Wingtip clearance on each side for moving aircraft between parked
+        else:  # Aircraft with wingspan < 110 ft
+            peripheral_taxi_width = 30  # Wingtip clearance for moving aircraft on peripheral
+            interior_taxi_width = 20 + 20  # Wingtip clearance on each side for moving aircraft between parked
 
+        return interior_taxi_width, peripheral_taxi_width
 
-            parameters[2].filter.list = list(points_list)
-    
-        optimize_quantities_param = parameters[9]
-        min_aircraft_quantities_param = parameters[10]
-        optimization_attempts_param = parameters[11]
+    def calculate_parking_available(self, apron_length, apron_width, aircraft_length, aircraft_wingspan):
+        # Calculate the taxiway dimensions based on the aircraft specifications
+        if aircraft_wingspan >= 110:  # Condition for larger aircraft
+            interior_taxi_width = 30 + aircraft_wingspan + 30  # Larger aircraft calculation
+        else:
+            interior_taxi_width = 20 + aircraft_wingspan + 20  # Smaller aircraft calculation
 
-        optimize_quantities_param.value = False if optimize_quantities_param.value is None else optimize_quantities_param.value
-        min_aircraft_quantities_param.enabled = optimize_quantities_param.value
-        optimization_attempts_param.enabled = optimize_quantities_param.value
+        peripheral_taxi_width = 50 + (aircraft_wingspan / 2) + 37.5  # Peripheral Taxi Width
+        wingtip_between_parked = 25  # Space between parked aircraft
+
+        # I. Standard apron configuration
+        # 1) Determine number of rows
+        available_length = apron_length
+        num_rows = max(1, math.floor((available_length + interior_taxi_width) / (aircraft_length + interior_taxi_width)))
+        arcpy.AddMessage(f"Standard Configuration - Available Length: {available_length} ft, Aircraft Length: {aircraft_length} ft, Interior Taxi Width: {interior_taxi_width} ft")
+        arcpy.AddMessage(f"Calculated Rows: {num_rows}")
+
+        # 2) Determine number of columns
+        available_width = max(0, apron_width - peripheral_taxi_width)
+        num_cols = max(1, math.floor((available_width + wingtip_between_parked) / (aircraft_wingspan + wingtip_between_parked)))
+        arcpy.AddMessage(f"Standard Configuration - Available Width: {available_width} ft, Aircraft Wingspan: {aircraft_wingspan} ft, Wingtip Between Parked: {wingtip_between_parked} ft")
+        arcpy.AddMessage(f"Calculated Columns: {num_cols}")
+
+        # 3) Parking available in standard configuration
+        parking_available_I = num_rows * num_cols
+
+        # II. Rotated apron configuration
+        # 1) Determine number of rows
+        available_length_rotated = apron_width
+        num_rows_rotated = max(1, math.floor((available_length_rotated + interior_taxi_width) / (aircraft_length + interior_taxi_width)))
+        arcpy.AddMessage(f"Rotated Configuration - Available Length: {available_length_rotated} ft, Aircraft Length: {aircraft_length} ft, Interior Taxi Width: {interior_taxi_width} ft")
+        arcpy.AddMessage(f"Calculated Rotated Rows: {num_rows_rotated}")
+
+        # 2) Determine number of columns
+        available_width_rotated = max(0, apron_length - peripheral_taxi_width)
+        num_cols_rotated = max(1, math.floor((available_width_rotated + wingtip_between_parked) / (aircraft_wingspan + wingtip_between_parked)))
+        arcpy.AddMessage(f"Rotated Configuration - Available Width: {available_width_rotated} ft, Aircraft Wingspan: {aircraft_wingspan} ft, Wingtip Between Parked: {wingtip_between_parked} ft")
+        arcpy.AddMessage(f"Calculated Rotated Columns: {num_cols_rotated}")
+
+        # 3) Parking available in rotated configuration
+        parking_available_II = num_rows_rotated * num_cols_rotated
+
+        # III. Final Parking Available
+        final_parking_available = max(parking_available_I, parking_available_II)
+        arcpy.AddMessage(f"Final Parking Available (Maximum of Standard and Rotated): {final_parking_available}")
+
+        return final_parking_available, num_rows, num_cols, num_rows_rotated, num_cols_rotated, parking_available_I, parking_available_II
+
+    def calculate_airfield_orientation(self, airfield_shape, sr):
+        # Calculate the orientation of the airfield based on the longest edge
+        # max_length = 0
+        # orientation_angle = 0
+        # for row in arcpy.da.SearchCursor(airfield_shape, ["SHAPE@"], spatial_reference=sr):
+        #     for part in row:
+        #         for i in range(len(part) - 1):
+        #             if part[i] and part[i + 1]:
+        #                 p1 = part[i]
+        #                 p2 = part[i + 1]
+        #                 dx = p2.X - p1.X
+        #                 dy = p2.Y - p1.Y
+        #                 length = math.hypot(dx, dy)
+        #                 if length > max_length:
+        #                     max_length = length
+        #                     orientation_angle = math.degrees(math.atan2(dy, dx))
+
+        # Commented out the above code and replaced with CalculatePolygonMainAngle tool
+
+        if "SHAPE_ANGLE" not in [columns.name for columns in arcpy.ListFields(airfield_shape)]:
+            arcpy.management.AddField(airfield_shape, "Shape_Angle", "FLOAT")
+            arcpy.AddMessage("Field 'SHAPE_ANGLE' added to the input table.")
+        else:
+            arcpy.AddMessage("Field 'SHAPE_ANGLE' already exists in the input table.")
+
+        arcpy.cartography.CalculatePolygonMainAngle(airfield_shape, "Shape_Angle", "ARITHMETIC")
+
+        with arcpy.da.SearchCursor(airfield_shape, ["Shape_Angle"]) as cursor:
+            for row in cursor:
+                orientation_angle = row[0]
+
+        return orientation_angle
 
     def execute(self, parameters, messages):
         # Extract parameter values
         aircraft_table = parameters[0].valueAsText
-        airfield_layer_object = parameters[1].value # added to work for the airfield layer generation
+        airfield_layer = parameters[1].valueAsText
+        selected_aircraft = parameters[2].valueAsText
+        enable_advanced_settings = parameters[3].value
+        manual_length = parameters[4].value
+        manual_width = parameters[5].value
+        manual_interior_taxi_width = parameters[6].value
+        manual_peripheral_taxi_width = parameters[7].value
+        out_aircraft_fc = parameters[8].valueAsText  # Output Aircraft Feature Class
+        out_constraint_fc = parameters[9].valueAsText  # Output Constraint Feature Class
 
-        airfield_layer_object_origin = parameters[2].valueAsText
-        origin_coords = re.findall(r"X:\s*([\d\.\-]+),\s*Y:\s*([\d\.\-]+)", airfield_layer_object_origin)
-        if origin_coords:
-            origin_x, origin_y = map(float, origin_coords[0])
-        airfield_layer_object_origin = arcpy.Point(origin_x, origin_y)
+        try:
+            # Get the spatial reference of the airfield layer
+            airfield_sr = arcpy.Describe(airfield_layer).spatialReference
 
-        interior_taxi_width = float(parameters[3].value)
-        peripheral_taxi_width = float(parameters[4].value)
-        wingtip_clearance = float(parameters[5].value)
-        selected_aircraft = parameters[6].valueAsText
-        aircraft_quantities = parameters[7].valueAsText
-        apply_lcn = parameters[8].value
-        optimize_quantities = parameters[9].value
-        min_quantities = parameters[10].valueAsText
+            # Ensure the airfield layer is in a projected coordinate system
+            if airfield_sr.type != 'Projected':
+                arcpy.AddError("Airfield layer must be in a projected coordinate system with linear units (e.g., meters or feet).")
+                return
 
-        out_fc = parameters[12].valueAsText
+            sr = airfield_sr
 
-        # Process min_quantities
-        if parameters[10].value:  # Assuming min_quantities is the 11th parameter
-            min_quantities = parameters[11].valueAsText
-        else:
-            min_quantities = ','.join(['1'] * len(selected_aircraft))  # Default to 1 for each aircraft type
+            # Get airfield geometry
+            with arcpy.da.SearchCursor(airfield_layer, ["SHAPE@", "LENGTH", "WIDTH"], spatial_reference=sr) as cursor:
+                for row in cursor:
+                    airfield_shape, default_length, default_width = row
+                    break
+                else:
+                    arcpy.AddError(f"Airfield '{airfield_layer}' not found.")
+                    return
 
-        # Get airfield data
-        apron_length, apron_width, apron_lcn = self.get_airfield_data(airfield_layer_object)
+            # Determine orientation angle
+            angle = self.calculate_airfield_orientation(airfield_layer, sr)
+            arcpy.AddMessage(f"Calculated airfield orientation: {angle} degrees")
 
-        # Get aircraft data
-        aircraft_data = self.get_aircraft_data(aircraft_table, selected_aircraft)
+            # Get airfield dimensions
+            if enable_advanced_settings and manual_length is not None and manual_width is not None:
+                apron_length = float(manual_length)
+                apron_width = float(manual_width)
+                arcpy.AddMessage(f"Using manual airfield dimensions: Length={apron_length} ft, Width={apron_width} ft")
+            else:
+                apron_length = float(default_length)
+                apron_width = float(default_width)
+                arcpy.AddMessage(f"Retrieved airfield dimensions: Length={apron_length} ft, Width={apron_width} ft")
 
-        # Calculate MOG
-        result = self.calculate_mog(aircraft_data, apron_length, apron_width, apron_lcn,
-                                    interior_taxi_width, peripheral_taxi_width, 
-                                    wingtip_clearance, apply_lcn, aircraft_quantities, 
-                                    min_quantities, optimize_quantities)
+            # Get aircraft dimensions
+            aircraft_data = self.get_aircraft_data(aircraft_table, selected_aircraft)
+            if not aircraft_data:
+                arcpy.AddError(f"Aircraft '{selected_aircraft}' not found.")
+                return
+            mds, aircraft_length, aircraft_wingspan, _ = aircraft_data[0]
+            arcpy.AddMessage(f"Selected Aircraft: {mds}, Length={aircraft_length} ft, Wingspan={aircraft_wingspan} ft")
 
-        # Display results
-        self.display_results(result, apron_length, apron_width, apron_lcn,
-                             interior_taxi_width, peripheral_taxi_width, wingtip_clearance)
-        
-        # Create resulting asircraft footprint layer represented by objects
-        self.create_aircraft_layer(airfield_layer_object, airfield_layer_object_origin, parameters[1].valueAsText, aircraft_data, result, out_fc, wingtip_clearance, interior_taxi_width)
+            # Use manual taxiway widths if provided
+            if enable_advanced_settings and manual_interior_taxi_width is not None and manual_peripheral_taxi_width is not None:
+                interior_taxi_width = float(manual_interior_taxi_width)
+                peripheral_taxi_width = float(manual_peripheral_taxi_width)
+                arcpy.AddMessage(f"Using manual taxiway widths: Interior Taxi Width={interior_taxi_width} ft, Peripheral Taxi Width={peripheral_taxi_width} ft")
+            else:
+                # Calculate taxiway widths based on aircraft dimensions
+                interior_taxi_width, peripheral_taxi_width = self.calculate_taxiway_widths(aircraft_length, aircraft_wingspan)
+                arcpy.AddMessage(f"Calculated taxiway widths: Interior Taxi Width={interior_taxi_width} ft, Peripheral Taxi Width={peripheral_taxi_width} ft")
 
-    def get_airfield_data(self, airfield_layer_object):
-        
-        with arcpy.da.SearchCursor(airfield_layer_object, ["LENGTH", "WIDTH", "LCN", "OID@", "SHAPE@"]) as cursor:
-            for row in cursor:
-                return float(row[0]), float(row[1]), float(row[2])
-            
-        arcpy.AddError(f"Object '{airfield_layer_object}' not found.")
-        return None, None, None
+            # Wingtip clearance between parked aircraft
+            wingtip_between_parked = 25  # Adjust as necessary
+            arcpy.AddMessage(f"Using wingtip clearance between parked aircraft: {wingtip_between_parked} ft")
+
+            # Calculate parking availability
+            (parking_available, num_rows_standard, num_cols_standard, num_rows_rotated, num_cols_rotated,
+             parking_available_I, parking_available_II) = self.calculate_parking_available(
+                apron_length, apron_width, aircraft_length, aircraft_wingspan)
+
+            arcpy.AddMessage(f"Final Parking Available for {mds}: {parking_available}")
+
+            # Decide whether to use standard or rotated configuration based on which has more parking available
+            if parking_available == parking_available_I:
+                # Standard configuration
+                num_rows_to_place = num_rows_standard
+                num_cols_to_place = num_cols_standard
+                dx = aircraft_wingspan + wingtip_between_parked
+                dy = aircraft_length + interior_taxi_width
+                arcpy.AddMessage("Using standard configuration for aircraft placement.")
+            else:
+                # Rotated configuration
+                num_rows_to_place = num_rows_rotated
+                num_cols_to_place = num_cols_rotated
+                dx = aircraft_wingspan + wingtip_between_parked
+                dy = aircraft_length + interior_taxi_width
+                # Swap dx and dy for rotated configuration
+                dx, dy = dy, dx
+                angle += 90  # Adjust angle by 90 degrees for rotation
+                arcpy.AddMessage("Using rotated configuration for aircraft placement.")
+
+            # Convert dimensions from feet to spatial reference units
+            unit_name = sr.linearUnitName.lower()
+            if 'foot' in unit_name:
+                unit_factor = 1.0  # Units are already in feet
+            elif 'meter' in unit_name:
+                unit_factor = 0.3048  # Convert feet to meters
+            else:
+                arcpy.AddError(f"Unsupported linear unit in spatial reference: {sr.linearUnitName}")
+                return
+
+            dx_units = dx * unit_factor
+            dy_units = dy * unit_factor
+
+            # Create separate feature classes for aircraft and constraints
+            # Aircraft Feature Class already defined as out_aircraft_fc
+            # Constraint Feature Class defined as out_constraint_fc
+
+            # Ensure feature classes do not already exist. If they do, delete them.
+            for fc in [out_aircraft_fc, out_constraint_fc]:
+                if arcpy.Exists(fc):
+                    arcpy.Delete_management(fc)
+                    arcpy.AddMessage(f"Existing feature class '{fc}' deleted.")
+
+            # Create Aircraft Feature Class
+            arcpy.CreateFeatureclass_management(os.path.dirname(out_aircraft_fc), os.path.basename(out_aircraft_fc), "POLYGON", spatial_reference=sr)
+            # Add necessary fields to Aircraft Feature Class
+            arcpy.AddField_management(out_aircraft_fc, "MDS", "TEXT")
+            arcpy.AddField_management(out_aircraft_fc, "AircraftID", "LONG")
+            arcpy.AddField_management(out_aircraft_fc, "Rotation", "DOUBLE")
+            arcpy.AddField_management(out_aircraft_fc, "Type", "TEXT")  # New field to identify type
+
+            # Create Constraint Feature Class
+            arcpy.CreateFeatureclass_management(os.path.dirname(out_constraint_fc), os.path.basename(out_constraint_fc), "POLYGON", spatial_reference=sr)
+            # Add necessary fields to Constraint Feature Class
+            arcpy.AddField_management(out_constraint_fc, "AircraftID", "LONG")  # To associate with aircraft
+            arcpy.AddField_management(out_constraint_fc, "Type", "TEXT")  # New field to identify type
+
+            # Determine the starting point (use airfield centroid)
+            start_point = airfield_shape.centroid
+            arcpy.AddMessage(f"Using airfield centroid as starting point: ({start_point.X}, {start_point.Y})")
+
+            # Generate grid coordinates centered at (0, 0)
+            grid_points = []
+            for i in range(num_rows_to_place):
+                for j in range(num_cols_to_place):
+                    x = j * dx_units - ((num_cols_to_place - 1) * dx_units) / 2
+                    y = i * dy_units - ((num_rows_to_place - 1) * dy_units) / 2
+                    grid_points.append((x, y))
+
+            # Rotate and translate grid points
+            angle_rad = math.radians(angle)
+            cos_angle = math.cos(angle_rad)
+            sin_angle = math.sin(angle_rad)
+
+            aircraft_id = 1
+            aircraft_records = []  # To store aircraft data for constraint creation
+
+            with arcpy.da.InsertCursor(out_aircraft_fc, ["SHAPE@", "MDS", "AircraftID", "Rotation", "Type"]) as aircraft_cursor:
+                for x_local, y_local in grid_points:
+                    x_rotated = x_local * cos_angle - y_local * sin_angle
+                    y_rotated = x_local * sin_angle + y_local * cos_angle
+                    x_global = start_point.X + x_rotated
+                    y_global = start_point.Y + y_rotated
+
+                    # Create aircraft rectangle corners
+                    half_length = (aircraft_length * unit_factor) / 2
+                    half_wingspan = (aircraft_wingspan * unit_factor) / 2
+                    corners = [
+                        arcpy.Point(x_global - half_wingspan, y_global + half_length),
+                        arcpy.Point(x_global + half_wingspan, y_global + half_length),
+                        arcpy.Point(x_global + half_wingspan, y_global - half_length),
+                        arcpy.Point(x_global - half_wingspan, y_global - half_length),
+                        arcpy.Point(x_global - half_wingspan, y_global + half_length)
+                    ]
+
+                    # Create aircraft polygon with rotation
+                    polygon_array = arcpy.Array()
+                    for corner in corners:
+                        # Rotate corner around center point
+                        dx = corner.X - x_global
+                        dy = corner.Y - y_global
+                        rotated_x = x_global + (dx * cos_angle - dy * sin_angle)
+                        rotated_y = y_global + (dx * sin_angle + dy * cos_angle)
+                        polygon_array.add(arcpy.Point(rotated_x, rotated_y))
+
+                    aircraft_polygon = arcpy.Polygon(polygon_array, sr)
+
+                    # Check if aircraft polygon is within airfield
+                    if airfield_shape.contains(aircraft_polygon.centroid):
+                        # Insert aircraft polygon
+                        aircraft_cursor.insertRow([aircraft_polygon, mds, aircraft_id, angle % 360, "Aircraft"])
+                        arcpy.AddMessage(f"Placed {mds} at ({x_global}, {y_global}) - ID: {aircraft_id}/{parking_available}")
+                        # Store aircraft data for constraint creation
+                        aircraft_records.append({
+                            "AircraftID": aircraft_id,
+                            "Centroid": aircraft_polygon.centroid,
+                            "Length": aircraft_length * unit_factor,
+                            "Wingspan": aircraft_wingspan * unit_factor,
+                            "Rotation": angle % 360
+                        })
+                        aircraft_id += 1
+                    else:
+                        arcpy.AddWarning(f"Aircraft at position ({x_global}, {y_global}) is outside the airfield boundary.")
+
+            arcpy.AddMessage(f"Aircraft positions created in {out_aircraft_fc}, total aircraft placed: {aircraft_id - 1}")
+
+            # After aircraft polygons are created, create constraint polygons
+            self.create_constraint_polygons(out_constraint_fc, sr, aircraft_records)
+
+        except Exception as e:
+            arcpy.AddError(f"An error occurred during the MOG calculation: {str(e)}")
+            arcpy.AddError(traceback.format_exc())
+
+    def create_constraint_polygons(self, out_constraint_fc, sr, aircraft_records):
+        """
+        Creates constraint polygons based on the aircraft polygons.
+        Each constraint polygon is a larger rectangle around the aircraft.
+
+        :param out_constraint_fc: Path to the Constraint Feature Class
+        :param sr: Spatial Reference
+        :param aircraft_records: List of dictionaries containing aircraft data
+        """
+        try:
+            with arcpy.da.InsertCursor(out_constraint_fc, ["SHAPE@", "AircraftID", "Type"]) as constraint_cursor:
+                for record in aircraft_records:
+                    aircraft_id = record["AircraftID"]
+                    centroid = record["Centroid"]
+                    length = record["Length"]
+                    wingspan = record["Wingspan"]
+                    rotation = record["Rotation"]  # Get the rotation angle
+
+                    # Define the size of the constraint polygon
+                    clearance_factor = 1.2  # 20% larger
+                    constraint_length = length * clearance_factor
+                    constraint_wingspan = wingspan * clearance_factor
+
+                    # Create constraint rectangle corners (unrotated)
+                    half_length = constraint_length / 2
+                    half_wingspan = constraint_wingspan / 2
+                    corners = [
+                        arcpy.Point(centroid.X - half_wingspan, centroid.Y + half_length),
+                        arcpy.Point(centroid.X + half_wingspan, centroid.Y + half_length),
+                        arcpy.Point(centroid.X + half_wingspan, centroid.Y - half_length),
+                        arcpy.Point(centroid.X - half_wingspan, centroid.Y - half_length),
+                        arcpy.Point(centroid.X - half_wingspan, centroid.Y + half_length)
+                    ]
+
+                    # Rotate corners around the centroid
+                    angle_rad = math.radians(rotation)
+                    cos_angle = math.cos(angle_rad)
+                    sin_angle = math.sin(angle_rad)
+                    rotated_corners = []
+                    for corner in corners:
+                        dx = corner.X - centroid.X
+                        dy = corner.Y - centroid.Y
+                        rotated_x = centroid.X + (dx * cos_angle - dy * sin_angle)
+                        rotated_y = centroid.Y + (dx * sin_angle + dy * cos_angle)
+                        rotated_corners.append(arcpy.Point(rotated_x, rotated_y))
+
+                    # Create constraint polygon with rotation
+                    constraint_polygon = arcpy.Polygon(arcpy.Array(rotated_corners), sr)
+
+                    # Insert constraint polygon
+                    constraint_cursor.insertRow([constraint_polygon, aircraft_id, "Constraint"])
+                    arcpy.AddMessage(f"Constraint polygon created for Aircraft ID: {aircraft_id}")
+
+            arcpy.AddMessage(f"Constraint polygons created in {out_constraint_fc}")
+
+        except Exception as e:
+            arcpy.AddError(f"An error occurred while creating constraint polygons: {str(e)}")
+            arcpy.AddError(traceback.format_exc())
 
     def get_aircraft_data(self, aircraft_table, selected_aircraft):
         aircraft_data = []
         with arcpy.da.SearchCursor(aircraft_table, ["MDS", "LENGTH", "WING_SPAN", "ACFT_LCN"]) as cursor:
             for row in cursor:
-                if row[0] and row[0] in selected_aircraft:
+                if row[0] == selected_aircraft:
                     aircraft_data.append(row)
+                    break
         return aircraft_data
 
-    def calculate_mog(self, aircraft_data, apron_length, apron_width, apron_lcn,
-                      interior_taxi_width, peripheral_taxi_width, wingtip_clearance,
-                      apply_lcn=False, aircraft_quantities=None, min_quantities=None, optimize_quantities=False):
-        self.aircraft_data = aircraft_data  # Store aircraft data for later use
-        usable_length = apron_length - (2 * peripheral_taxi_width)
-        usable_width = apron_width - (2 * peripheral_taxi_width)
-        usable_area = usable_length * usable_width
-
-        if aircraft_quantities:
-            requested_quantities = [int(q.strip()) for q in aircraft_quantities.split(',')]
-            total_requested_area = sum(qty * length * wingspan 
-                                       for (mds, length, wingspan, _), qty in zip(aircraft_data, requested_quantities))
-            
-            if total_requested_area > usable_area:
-                arcpy.AddWarning("WARNING: The requested aircraft quantities exceed the usable apron area.")
-                arcpy.AddWarning(f"Total area required by aircraft: {total_requested_area:.2f} sq ft")
-                arcpy.AddWarning(f"Usable apron area: {usable_area:.2f} sq ft")
-                arcpy.AddWarning("The tool will attempt to place as many aircraft as possible within the available space.")
-
-        if optimize_quantities:
-            return self.optimize_placement(aircraft_data, apron_length, apron_width, apron_lcn,
-                                           interior_taxi_width, peripheral_taxi_width, wingtip_clearance,
-                                           apply_lcn, min_quantities)
-        else:
-            results = []
-            for i, (mds, length, wingspan, aircraft_lcn) in enumerate(aircraft_data):
-                if apply_lcn and aircraft_lcn > apron_lcn:
-                    arcpy.AddWarning(f"Aircraft {mds} LCN ({aircraft_lcn}) exceeds apron LCN ({apron_lcn}). Skipping this aircraft.")
-                    continue
-
-                max_count = self.calculate_max_aircraft(length, wingspan, usable_length, usable_width,
-                                                        interior_taxi_width, wingtip_clearance)
-
-                if aircraft_quantities:
-                    requested_count = requested_quantities[i]
-                    if requested_count > max_count:
-                        arcpy.AddWarning(f"Requested quantity for {mds} ({requested_count}) exceeds maximum possible ({max_count}). Placing {max_count} aircraft.")
-                        count = max_count
-                    else:
-                        count = requested_count
-                else:
-                    count = max_count
-
-                num_rows, per_row, orientation = self.calculate_layout(count, length, wingspan, 
-                                                                       usable_length, usable_width,
-                                                                       interior_taxi_width, wingtip_clearance)
-                results.append((mds, count, num_rows, per_row, orientation, aircraft_lcn))
-
-            return results
-
-    def calculate_max_aircraft(self, length, wingspan, usable_length, usable_width, 
-                               interior_taxi_width, wingtip_clearance):
-        max_normal = self.calculate_num_rows(usable_width, wingspan, wingtip_clearance, interior_taxi_width) * \
-                     self.calculate_aircraft_per_row(usable_length, length)
-        max_rotated = self.calculate_num_rows(usable_width, length, wingtip_clearance, interior_taxi_width) * \
-                      self.calculate_aircraft_per_row(usable_length, wingspan)
-        return max(max_normal, max_rotated)
-
-    def calculate_layout(self, count, length, wingspan, usable_length, usable_width,
-                        interior_taxi_width, wingtip_clearance):
-        normal_rows = self.calculate_num_rows(usable_width, wingspan, wingtip_clearance, interior_taxi_width)
-        normal_per_row = self.calculate_aircraft_per_row(usable_length, length)
-        normal_total = normal_rows * normal_per_row
-
-        rotated_rows = self.calculate_num_rows(usable_width, length, wingtip_clearance, interior_taxi_width)
-        rotated_per_row = self.calculate_aircraft_per_row(usable_length, wingspan)
-        rotated_total = rotated_rows * rotated_per_row
-
-        arcpy.AddMessage(f"Normal Layout: Rows = {normal_rows}, Per Row = {normal_per_row}, Total = {normal_total}")
-        arcpy.AddMessage(f"Rotated Layout: Rows = {rotated_rows}, Per Row = {rotated_per_row}, Total = {rotated_total}")
-
-        if rotated_total > normal_total:
-            return rotated_rows, rotated_per_row, "rotated"
-        else:
-            return normal_rows, normal_per_row, "normal"
-
-    def calculate_num_rows(self, usable_width, wingspan, wingtip_clearance, interior_taxi_width):
-        space_per_row = wingspan + wingtip_clearance
-        total_row_space = usable_width - interior_taxi_width  # Reserve space for one less taxiway than rows
-        num_rows = math.floor(total_row_space / space_per_row)
-        return max(1, num_rows)  # Ensure at least one row
-
-    def calculate_aircraft_per_row(self, usable_length, aircraft_length):
-        return math.floor(usable_length / aircraft_length)
-
-    def display_results(self, results, apron_length, apron_width, apron_lcn,
-                        interior_taxi_width, peripheral_taxi_width, wingtip_clearance):
-        arcpy.AddMessage("\nSelected Aircraft Dimensions:")
-        for mds, length, wingspan, aircraft_lcn in self.aircraft_data:
-            arcpy.AddMessage(f"{mds}: Length = {length:.2f} ft, Wingspan = {wingspan:.2f} ft")
-
-        arcpy.AddMessage("\nMaximum On Ground (MOG) Results:")
-        total_aircraft = 0
-        total_aircraft_area = 0
-        for mds, count, rows, per_row, orientation, aircraft_lcn in results:
-            arcpy.AddMessage(f"{mds}: {count} aircraft ({rows} rows, {per_row} per row, {orientation} orientation, LCN: {aircraft_lcn})")
-            total_aircraft += count
-            # Find the corresponding aircraft dimensions
-            aircraft_dims = next((ac for ac in self.aircraft_data if ac[0] == mds), None)
-            if aircraft_dims:
-                _, length, wingspan, _ = aircraft_dims
-                total_aircraft_area += count * length * wingspan
-
-        arcpy.AddMessage(f"\nTotal aircraft: {total_aircraft}")
-        arcpy.AddMessage(f"Apron dimensions: {apron_length:.2f} x {apron_width:.2f} ft")
-        arcpy.AddMessage(f"Apron LCN: {apron_lcn}")
-        arcpy.AddMessage(f"Interior taxiway width: {interior_taxi_width:.2f} ft")
-        arcpy.AddMessage(f"Peripheral taxiway width: {peripheral_taxi_width:.2f} ft")
-        arcpy.AddMessage(f"Wingtip clearance: {wingtip_clearance:.2f} ft")
-
-        usable_length = apron_length - (2 * peripheral_taxi_width)
-        usable_width = apron_width - (2 * peripheral_taxi_width)
-        usable_area = usable_length * usable_width
-        arcpy.AddMessage(f"Usable apron area: {usable_length:.2f} x {usable_width:.2f} ft")
-
-        # Calculate additional metrics
-        total_apron_area = apron_length * apron_width
-        taxiway_area = total_apron_area - usable_area
-        total_used_area = total_aircraft_area + taxiway_area
-        remaining_area = max(0, total_apron_area - total_used_area)
-        remaining_space_percentage = max(0, (remaining_area / total_apron_area) * 100)
-        space_utilization_efficiency = min(100, (total_used_area / total_apron_area) * 100)
-
-        arcpy.AddMessage(f"\nTotal airfield area: {total_apron_area:.2f} sq ft")
-        arcpy.AddMessage(f"Area occupied by aircraft: {total_aircraft_area:.2f} sq ft")
-        arcpy.AddMessage(f"Area used for taxiways: {taxiway_area:.2f} sq ft")
-        arcpy.AddMessage(f"Total used area: {total_used_area:.2f} sq ft")
-        arcpy.AddMessage(f"Remaining area: {remaining_area:.2f} sq ft")
-        arcpy.AddMessage(f"Remaining space: {remaining_space_percentage:.2f}% of total airfield area")
-        arcpy.AddMessage(f"Space utilization efficiency: {space_utilization_efficiency:.2f}%")
-
-        if total_used_area > total_apron_area:
-            arcpy.AddWarning("WARNING: The total used area exceeds the total airfield area.")
-            arcpy.AddWarning("This may indicate that some aircraft are overlapping or extending beyond the apron boundaries.")
-
-    def optimize_placement(self, aircraft_data, apron_length, apron_width, apron_lcn,
-                           interior_taxi_width, peripheral_taxi_width, wingtip_clearance,
-                           apply_lcn, min_quantities):
-        population_size = 50
-        generations = 20
-        mutation_rate = 0.1
-
-        usable_length = apron_length - (2 * peripheral_taxi_width)
-        usable_width = apron_width - (2 * peripheral_taxi_width)
-
-        # Process min_quantities
-        if min_quantities:
-            min_counts = [int(q) for q in min_quantities.split(',')]
-        else:
-            min_counts = [1] * len(aircraft_data)  # Default to 1 if not specified
-
-        # Initialize population
-        population = []
-        for _ in range(population_size):
-            individual = [random.randint(min_count, 20) for min_count in min_counts]
-            population.append(individual)
-
-        best_solution = None
-        best_score = float('-inf')
-
-        for generation in range(generations):
-            arcpy.AddMessage(f"\nOptimization attempt {generation + 1}/{generations}")
-            
-            # Evaluate fitness
-            fitness_scores = []
-            for individual in population:
-                score = self.evaluate_fitness(individual, aircraft_data, usable_length, usable_width, apron_lcn,
-                                              interior_taxi_width, wingtip_clearance,
-                                              apply_lcn, min_counts)
-                fitness_scores.append(score)
-                if score > best_score:
-                    best_score = score
-                    best_solution = individual
-
-            # Selection
-            new_population = []
-            for _ in range(population_size):
-                parent1 = self.tournament_selection(population, fitness_scores)
-                parent2 = self.tournament_selection(population, fitness_scores)
-                child = self.crossover(parent1, parent2)
-                child = self.mutate(child, mutation_rate, min_counts)
-                new_population.append(child)
-
-            population = new_population
-
-        # Convert best solution to results format
-        results = []
-        for i, (mds, length, wingspan, aircraft_lcn) in enumerate(aircraft_data):
-            count = best_solution[i]
-            if count > 0:
-                num_rows, per_row, orientation = self.calculate_layout(count, length, wingspan, 
-                                                                       usable_length, usable_width,
-                                                                       interior_taxi_width, wingtip_clearance)
-                results.append((mds, count, num_rows, per_row, orientation, aircraft_lcn))
-
-        return results
-
-    def evaluate_fitness(self, individual, aircraft_data, usable_length, usable_width, apron_lcn,
-                         interior_taxi_width, wingtip_clearance,
-                         apply_lcn, min_counts):
-        total_area = 0
-        total_aircraft = 0
-
-        for i, (mds, length, wingspan, aircraft_lcn) in enumerate(aircraft_data):
-            count = individual[i]
-            if count < min_counts[i]:
-                return float('-inf')  # Invalid solution if below minimum count
-
-            if apply_lcn and aircraft_lcn > apron_lcn:
-                return float('-inf')  # Invalid solution
-
-            area = count * length * wingspan
-            total_area += area
-            total_aircraft += count
-
-        if total_area > usable_length * usable_width:
-            return float('-inf')  # Invalid solution
-
-        return total_aircraft  # Fitness is the total number of aircraft
-
-    def tournament_selection(self, population, fitness_scores, tournament_size=3):
-        selected = random.sample(range(len(population)), tournament_size)
-        winner = max(selected, key=lambda i: fitness_scores[i])
-        return population[winner]
-
-    def crossover(self, parent1, parent2):
-        crossover_point = random.randint(1, len(parent1) - 1)
-        child = parent1[:crossover_point] + parent2[crossover_point:]
-        return child
-
-    def mutate(self, individual, mutation_rate, min_counts):
-        return [max(min_count, gene + random.randint(-1, 1)) if random.random() < mutation_rate else gene 
-                for gene, min_count in zip(individual, min_counts)]
-
-    def create_aircraft_layer(self, airfield_layer_object, airfield_layer_object_origin, airfield_layer_object_name, aircraft_data, mog_result, out_fc, wingtip_clearance, interior_taxi_width):
-
-        try:
-
-            # Validate and create output feature class
-            workspace = os.path.dirname(out_fc)
-            valid_name = arcpy.ValidateTableName(os.path.basename(out_fc), workspace)
-            out_fc = os.path.join(workspace, valid_name)
-            sr = arcpy.Describe(airfield_layer_object).spatialReference
-            arcpy.management.CreateFeatureclass(workspace, valid_name, "POLYGON", spatial_reference = sr)
-
-            # Add fields for aircraft properties
-            arcpy.management.AddField(out_fc, "MDS", "TEXT")
-            arcpy.management.AddField(out_fc, "LENGTH", "DOUBLE")
-            arcpy.management.AddField(out_fc, "WINGSPAN", "DOUBLE")
-            arcpy.management.AddField(out_fc, "FOOTPRINT", "DOUBLE")
-
-            # Check if column with shape angles exists in the airfield layer
-
-            x_start = airfield_layer_object_origin.X
-            y_start = airfield_layer_object_origin.Y
-
-            # Generalize the airfield layer to reduce the number of points
-            vertex_count = 0
-            with arcpy.da.SearchCursor(airfield_layer_object, ["SHAPE@"]) as cursor:
-                for row in cursor:
-                    for part in row[0]:
-                        vertex_count += len(part)
-
-            if vertex_count > 4:
-                # Create a copy of the airfield_layer_object as a new feature class
-                workspace = os.path.dirname(arcpy.Describe(airfield_layer_object).catalogPath)
-                valid_name = arcpy.ValidateTableName(airfield_layer_object_name + "_generalized", workspace)
-                airfield_layer_object_generalized = os.path.join(workspace, valid_name)
-                sr = arcpy.Describe(airfield_layer_object).spatialReference
-                arcpy.management.CreateFeatureclass(workspace, valid_name, "POLYGON", spatial_reference=sr)
-
-                # Copy all data from the original to the new feature class
-                arcpy.management.CopyFeatures(airfield_layer_object, airfield_layer_object_generalized)
-
-                # Generalize the copied feature class
-                arcpy.edit.Generalize(airfield_layer_object_generalized, "10 Feet")
-            else:
-                airfield_layer_object_generalized = airfield_layer_object
-
-            # Determine the second vertex (next-closest vertex)
-            second_vertex = None
-            min_distance = float('inf')
-            with arcpy.da.SearchCursor(airfield_layer_object_generalized, ["SHAPE@"]) as cursor:
-                for row in cursor:
-                    for part in row[0]:
-                        for point in part:
-                            if point and (point.X != x_start or point.Y != y_start):
-                                distance = math.sqrt((point.X - x_start) ** 2 + (point.Y - y_start) ** 2)
-                                if distance < min_distance:
-                                    min_distance = distance
-                                    second_vertex = point
-
-            if not second_vertex:
-                raise ValueError("Could not determine the second vertex for alignment.")
-
-            # Calculate the angle between the origin vertex and the second vertex
-            dx = second_vertex.X - x_start
-            dy = second_vertex.Y - y_start
-            angle = math.degrees(math.atan2(dy, dx))
-
-            # Process the selected aircraft
-            for row in aircraft_data:
-                mds, length, wingspan, aircraft_lcn = row
-
-                length = float(length) if length is not None else 0
-                wingspan = float(wingspan) if wingspan is not None else 0
-
-                length_in_degrees = length / 364000  # Approximate conversion from feet to degrees latitude
-                wingspan_in_degrees = wingspan / 364000
-
-                result_tuple = next((item for item in mog_result if item[0] == mds), None)
-                if result_tuple is None:
-                    arcpy.AddMessage(f"No result found for MDS: {mds}")
-                    continue
-
-                quantity = result_tuple[1]
-                max_rows = result_tuple[2]
-                max_per_row = result_tuple[3]
-
-                arcpy.AddMessage(f"A total of {quantity} aircraft will be placed over {max_per_row} per row with {max_rows} in each row.")
-
-                with arcpy.da.InsertCursor(out_fc, ["SHAPE@", "MDS", "LENGTH", "WINGSPAN", "FOOTPRINT"]) as insert_cursor:
-                    points_placed = 0
-                    row_index = 0
-                    col_index = 0
-
-                    while points_placed < quantity:
-                        # Calculate the rotated coordinates
-                        x_offset = col_index * (wingspan_in_degrees + wingtip_clearance / 364000)
-                        y_offset = row_index * (length_in_degrees + interior_taxi_width / 364000)
-                        x_rot = x_start + x_offset * math.cos(math.radians(angle)) - y_offset * math.sin(math.radians(angle))
-                        y_rot = y_start + x_offset * math.sin(math.radians(angle)) + y_offset * math.cos(math.radians(angle))
-
-                        # Create the aircraft shape
-                        aircraft_shapes = self.create_aircraft_shape(x_rot, y_rot, length_in_degrees, wingspan_in_degrees, angle)
-
-                        # Create the polygon
-                        polygon = arcpy.Polygon(arcpy.Array(aircraft_shapes), sr)
-                        insert_cursor.insertRow([polygon, mds, length, wingspan, length * wingspan])
-                        points_placed += 1
-
-                        arcpy.AddMessage(f"Placed {mds} at ({x_rot}, {y_rot}) - {points_placed}/{quantity}")
-
-                        # Move to the next column or row
-                        col_index += 1
-                        if col_index >= max_per_row:
-                            col_index = 0
-                            row_index += 1
-
-            arcpy.AddMessage(f"Aircraft polygons created in {out_fc}")
-
-        except Exception as e:
-            arcpy.AddError(f"An error occurred while creating the polygons: {str(e)}")
-            arcpy.AddError(arcpy.GetMessages())
-            arcpy.AddError(traceback.format_exc())
-
-    def create_aircraft_shape(self, x_start, y_start, length, wingspan, angle):
-        # Define the corners of the rectangle representing the aircraft footprint
-        corners = [
-            arcpy.Point(x_start, y_start),  # Bottom-left corner
-            arcpy.Point(x_start + wingspan, y_start),  # Bottom-right corner
-            arcpy.Point(x_start + wingspan, y_start + length),  # Top-right corner
-            arcpy.Point(x_start, y_start + length),  # Top-left corner
-            arcpy.Point(x_start, y_start)  # Back to bottom-left corner to close the polygon
-        ]
-
-        # Rotate the corners by the angle
-        angle_rad = math.radians(angle)
-        rotated_corners = []
-        for corner in corners:
-            x_rot = x_start + (corner.X - x_start) * math.cos(angle_rad) - (corner.Y - y_start) * math.sin(angle_rad)
-            y_rot = y_start + (corner.X - x_start) * math.sin(angle_rad) + (corner.Y - y_start) * math.cos(angle_rad)
-            rotated_corners.append(arcpy.Point(x_rot, y_rot))
-
-        return rotated_corners
-
-        # Define proportions
-        # fuselage_width = length * 0.1
-        # nose_length = length * 0.2
-        # tail_length = length * 0.15
-        # wing_sweep = length * 0.1
-        # tail_sweep = length * 0.05
-
-        # corners = [
-        #     arcpy.Point(x_start, y_start + length/2),  # Nose tip
-        #     arcpy.Point(x_start - fuselage_width/2, y_start + length/2 - nose_length),  # Nose left
-        #     arcpy.Point(x_start - wingspan/2, y_start + wing_sweep),  # Left wingtip front
-        #     arcpy.Point(x_start - wingspan/2, y_start),  # Left wingtip middle
-        #     arcpy.Point(x_start - wingspan/2, y_start - wing_sweep),  # Left wingtip rear
-        #     arcpy.Point(x_start - fuselage_width/2, y_start - length/2 + tail_length),  # Fuselage left before tail
-        #     arcpy.Point(x_start - wingspan/4, y_start - length/2),  # Left tail tip
-        #     arcpy.Point(x_start, y_start - length/2 - tail_sweep),  # Tail bottom tip
-        #     arcpy.Point(x_start + wingspan/4, y_start - length/2),  # Right tail tip
-        #     arcpy.Point(x_start + fuselage_width/2, y_start - length/2 + tail_length),  # Fuselage right before tail
-        #     arcpy.Point(x_start + wingspan/2, y_start - wing_sweep),  # Right wingtip rear
-        #     arcpy.Point(x_start + wingspan/2, y_start),  # Right wingtip middle
-        #     arcpy.Point(x_start + wingspan/2, y_start + wing_sweep),  # Right wingtip front
-        #     arcpy.Point(x_start + fuselage_width/2, y_start + length/2 - nose_length),  # Nose right
-        #     arcpy.Point(x_start, y_start + length/2)  # Back to nose tip
-        # ]
-
-        return corners
+    def get_airfield_dimension(self, airfield_layer, dimension_field):
+        with arcpy.da.SearchCursor(airfield_layer, [dimension_field]) as cursor:
+            for row in cursor:
+                return float(row[0])  # Return the requested dimension as float
+        arcpy.AddError(f"Airfield '{airfield_layer}' not found or dimension '{dimension_field}' not available.")
+        return None  # Return None if not found
