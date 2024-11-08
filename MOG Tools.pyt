@@ -9,308 +9,9 @@ class Toolbox(object):
     def __init__(self):
         self.label = "Aircraft MOG Optimization"
         self.alias = "AircraftMOG"
-        self.tools = [ImportAircraftData, CalculateAircraftFootprint, CalculateMaximumOnGround]
+        self.tools = [CalculateMaximumOnGround]
 
 
-# Class for importing aircraft data and saving it to GDB if required
-class ImportAircraftData(object):
-    def __init__(self):
-        self.label = "Import Aircraft Data"
-        self.description = "Import aircraft specifications from a CSV file and optionally save as a GDB table"
-
-    def getParameterInfo(self):
-        params = [
-            arcpy.Parameter(
-                displayName="Input CSV File", 
-                name="in_csv", 
-                datatype="DEFile", 
-                parameterType="Required", 
-                direction="Input"),
-            arcpy.Parameter(
-                displayName="Output Table (CSV or GDB)", 
-                name="out_table", 
-                datatype="DETable", 
-                parameterType="Required", 
-                direction="Output"),
-            arcpy.Parameter(
-                displayName="Save as Geodatabase Table", 
-                name="save_as_gdb", 
-                datatype="GPBoolean", 
-                parameterType="Optional", 
-                direction="Input")
-        ]
-        return params
-
-    def execute(self, parameters, messages):
-        in_csv = parameters[0].valueAsText
-        out_table = parameters[1].valueAsText
-        save_as_gdb = parameters[2].value   # Boolean for saving as GDB
-        
-        try:
-            # Read CSV data
-            if not os.path.exists(in_csv):
-                arcpy.AddError(f"Input CSV file does not exist: {in_csv}")
-                return
-
-            df = pd.read_csv(in_csv)
-            df = df.dropna(subset=['MDS'])  # Drop rows with missing MDS
-
-            numeric_columns = ['LENGTH', 'WING_SPAN', 'HEIGHT', 'WING_HEIGHT', 'TURNING_RADIUS', 'MIN_RWY_LENGTH', 'ACFT_LCN']
-            for col in numeric_columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-
-            # Convert the CSV data to a temporary CSV file
-            temp_csv = os.path.join(arcpy.env.scratchFolder, "temp.csv")
-            df.to_csv(temp_csv, index=False)
-
-            # Check if saving as GDB
-            if save_as_gdb:
-                # Save the table as a GDB table
-                gdb_path = os.path.dirname(out_table)
-                table_name = os.path.basename(out_table)
-                arcpy.conversion.TableToTable(temp_csv, gdb_path, table_name)
-                arcpy.AddMessage(f"Successfully saved as GDB table: {out_table}")
-            else:
-                # Save as a standard table (CSV)
-                arcpy.conversion.TableToTable(temp_csv, os.path.dirname(out_table), os.path.basename(out_table))
-                arcpy.AddMessage(f"Successfully imported aircraft records as CSV table.")
-            
-            # Clean up
-            os.remove(temp_csv)
-
-        except Exception as e:
-            arcpy.AddError(f"An error occurred during import: {str(e)}")
-            arcpy.AddError(arcpy.GetMessages())
-
-
-
-class CalculateAircraftFootprint(object):
-    def __init__(self):
-        self.label = "Create Aircraft Symbol Layer (Aircraft-Shaped Polygons)"
-        self.description = "Create polygon footprints resembling aircraft shapes for a selected aircraft at a specified airfield location."
-
-    def getParameterInfo(self):
-        params = [
-            arcpy.Parameter(
-                displayName="Input Aircraft Table",
-                name="in_table",
-                datatype="DETable",
-                parameterType="Required",
-                direction="Input"),
-            arcpy.Parameter(
-                displayName="Input Airfield Layer",
-                name="airfield_layer",
-                datatype="DEFeatureClass",
-                parameterType="Required",
-                direction="Input"),
-            arcpy.Parameter(
-                displayName="Output Feature Class",
-                name="out_fc",
-                datatype="DEFeatureClass",
-                parameterType="Required",
-                direction="Output"),
-            arcpy.Parameter(
-                displayName="Aircraft Name (MDS)",
-                name="aircraft_name",
-                datatype="GPString",
-                parameterType="Required",
-                direction="Input"),
-            arcpy.Parameter(
-                displayName="Quantity of Aircraft",
-                name="quantity_of_aircraft",
-                datatype="GPLong",
-                parameterType="Required",
-                direction="Input"),
-            arcpy.Parameter(
-                displayName="Airfield Name (AFLD_NAME)",
-                name="afld_name",
-                datatype="GPString",
-                parameterType="Required",
-                direction="Input"),
-            arcpy.Parameter(
-                displayName="Airfield ObjectID",
-                name="object_id",
-                datatype="GPLong",
-                parameterType="Required",
-                direction="Input"),
-            arcpy.Parameter(
-                displayName="Clearance Distance (in feet)",
-                name="buffer_distance",
-                datatype="GPDouble",
-                parameterType="Required",
-                direction="Input"),
-            arcpy.Parameter(
-                displayName="Maximum Aircraft per Row",
-                name="max_per_row",
-                datatype="GPLong",
-                parameterType="Required",
-                direction="Input")
-        ]
-        return params
-
-    def updateParameters(self, parameters):
-        # Ensure parameters list is long enough before accessing
-        if len(parameters) < 7:
-            arcpy.AddError("Not enough parameters provided.")
-            return
-
-        # Populate the Aircraft Name dropdown based on the Input Aircraft Table
-        if parameters[0].altered and not parameters[3].altered:
-            aircraft_table = parameters[0].valueAsText
-            if aircraft_table:
-                try:
-                    aircraft_names = set()
-                    with arcpy.da.SearchCursor(aircraft_table, ["MDS"]) as cursor:
-                        for row in cursor:
-                            aircraft_names.add(row[0])
-                    parameters[3].filter.list = sorted(aircraft_names)
-                except Exception as e:
-                    arcpy.AddError(f"Error loading aircraft names: {e}")
-        
-        # Populate the Airfield Name dropdown based on the Airfield Layer
-        if parameters[1].altered and not parameters[5].altered:
-            airfield_layer = parameters[1].valueAsText
-            if airfield_layer:
-                try:
-                    airfield_names = set()
-                    with arcpy.da.SearchCursor(airfield_layer, ["AFLD_NAME"]) as cursor:
-                        for row in cursor:
-                            airfield_names.add(row[0])
-                    parameters[5].filter.list = sorted(airfield_names)
-                except Exception as e:
-                    arcpy.AddError(f"Error loading airfield names: {e}")
-        
-        # Populate the Airfield ObjectID dropdown based on the selected airfield name
-        if parameters[5].altered and not parameters[6].altered:
-            airfield_layer = parameters[1].valueAsText
-            selected_airfield_name = parameters[5].valueAsText
-            if airfield_layer and selected_airfield_name:
-                try:
-                    object_ids = set()
-                    where_clause = f"AFLD_NAME = '{selected_airfield_name}'"
-                    with arcpy.da.SearchCursor(airfield_layer, ["OBJECTID"], where_clause) as cursor:
-                        for row in cursor:
-                            object_ids.add(str(row[0]))  # Convert ObjectID to string for dropdown
-                    parameters[6].filter.list = sorted(object_ids)
-                except Exception as e:
-                    arcpy.AddError(f"Error loading ObjectIDs: {e}")
-        
-        return
-
-    def create_aircraft_shape(self, x_start, y_start, length, wingspan):
-        # Create a rectangle representing the aircraft
-        half_length = length / 2
-        half_wingspan = wingspan / 2
-
-        corners = [
-            arcpy.Point(x_start - half_wingspan, y_start + half_length),  # Top-left corner
-            arcpy.Point(x_start + half_wingspan, y_start + half_length),  # Top-right corner
-            arcpy.Point(x_start + half_wingspan, y_start - half_length),  # Bottom-right corner
-            arcpy.Point(x_start - half_wingspan, y_start - half_length),  # Bottom-left corner
-            arcpy.Point(x_start - half_wingspan, y_start + half_length)   # Back to top-left corner
-        ]
-        return corners
-
-    def execute(self, parameters, messages):
-        # Retrieve parameters
-        in_table = parameters[0].valueAsText
-        airfield_layer = parameters[1].valueAsText
-        out_fc = parameters[2].valueAsText
-        selected_aircraft = parameters[3].valueAsText
-        quantity_of_aircraft = int(parameters[4].valueAsText)
-        afld_name = parameters[5].valueAsText
-        object_id = int(parameters[6].valueAsText)
-        buffer_distance = float(parameters[7].valueAsText)
-        max_per_row = int(parameters[8].valueAsText)
-
-        try:
-            # Validate and create output feature class
-            workspace = os.path.dirname(out_fc)
-            valid_name = arcpy.ValidateTableName(os.path.basename(out_fc), workspace)
-            out_fc = os.path.join(workspace, valid_name)
-            sr = arcpy.Describe(airfield_layer).spatialReference
-            arcpy.CreateFeatureclass_management(workspace, valid_name, "POLYGON", spatial_reference=sr)
-
-            # Add fields for aircraft properties
-            arcpy.AddField_management(out_fc, "MDS", "TEXT")
-            arcpy.AddField_management(out_fc, "LENGTH", "DOUBLE")
-            arcpy.AddField_management(out_fc, "WINGSPAN", "DOUBLE")
-            arcpy.AddField_management(out_fc, "Aircraft_Footprint", "DOUBLE")
-
-            # Get the airfield data (location and size)
-            airfield_where_clause = f"AFLD_NAME = '{afld_name}' AND OBJECTID = {object_id}"
-            with arcpy.da.SearchCursor(airfield_layer, ["SHAPE@", "LENGTH", "WIDTH", "LATITUDE", "LONGITUDE", "LCN"], airfield_where_clause) as cursor:
-                for row in cursor:
-                    airfield_shape, apron_length, apron_width, start_lat, start_lon, apron_lcn = row
-                    apron_length = float(apron_length) if apron_length is not None else 0
-                    apron_width = float(apron_width) if apron_width is not None else 0
-                    start_lat = float(start_lat) if start_lat is not None else 0
-                    start_lon = float(start_lon) if start_lon is not None else 0
-                    apron_lcn = float(apron_lcn) if apron_lcn is not None else 0
-                    break
-                else:
-                    arcpy.AddError(f"Airfield '{afld_name}' with ObjectID {object_id} not found.")
-                    return
-
-            arcpy.AddMessage(f"Airfield data: Length={apron_length}, Width={apron_width}, Lat={start_lat}, Lon={start_lon}, LCN={apron_lcn}")
-
-            # Process the selected aircraft
-            with arcpy.da.SearchCursor(in_table, ["MDS", "LENGTH", "WING_SPAN", "ACFT_LCN"]) as search_cursor:
-                for row in search_cursor:
-                    mds, length, wingspan, aircraft_lcn = row
-                    if mds == selected_aircraft:
-                        length = float(length) if length is not None else 0
-                        wingspan = float(wingspan) if wingspan is not None else 0
-                        aircraft_lcn = float(aircraft_lcn) if aircraft_lcn is not None else 0
-
-                        if length == 0 or wingspan == 0 or aircraft_lcn == 0:
-                            arcpy.AddError(f"Invalid data for {mds}: LENGTH={length}, WING_SPAN={wingspan}, ACFT_LCN={aircraft_lcn}")
-                            return
-
-                        arcpy.AddMessage(f"Processing aircraft {mds}: Length={length}, Wingspan={wingspan}, LCN={aircraft_lcn}")
-
-                        if aircraft_lcn > apron_lcn:
-                            arcpy.AddWarning(f"Aircraft {mds} LCN ({aircraft_lcn}) exceeds apron LCN ({apron_lcn}). Placement may not be suitable.")
-
-                        length_in_degrees = length / 364000  # Approximate conversion from feet to degrees latitude
-                        wingspan_in_degrees = wingspan / 364000
-
-                        with arcpy.da.InsertCursor(out_fc, ["SHAPE@", "MDS", "LENGTH", "WINGSPAN", "Aircraft_Footprint"]) as insert_cursor:
-                            points_placed = 0
-                            row_index = 0
-                            col_index = 0
-
-                            while points_placed < quantity_of_aircraft:
-                                x_start = start_lon + (col_index * (wingspan_in_degrees + buffer_distance / 364000))
-                                y_start = start_lat + (row_index * (length_in_degrees + buffer_distance / 364000))
-
-                                # Create the aircraft rectangle
-                                corners = self.create_aircraft_shape(x_start, y_start, length_in_degrees, wingspan_in_degrees)
-
-                                # Create the polygon
-                                polygon = arcpy.Polygon(arcpy.Array(corners), sr)
-                                insert_cursor.insertRow([polygon, mds, length, wingspan, length * wingspan])
-                                points_placed += 1
-
-                                arcpy.AddMessage(f"Placed {mds} at ({x_start}, {y_start}) - {points_placed}/{quantity_of_aircraft}")
-
-                                # Move to the next column or row
-                                col_index += 1
-                                if col_index >= max_per_row:
-                                    col_index = 0
-                                    row_index += 1
-
-                        break
-                else:
-                    arcpy.AddError(f"Aircraft {selected_aircraft} not found in the input table.")
-                    return
-
-            arcpy.AddMessage(f"Aircraft polygons created in {out_fc}")
-
-        except Exception as e:
-            arcpy.AddError(f"An error occurred while creating the polygons: {str(e)}")
-            arcpy.AddError(arcpy.GetMessages())
-            arcpy.AddError(traceback.format_exc())
             
 
 
@@ -507,21 +208,103 @@ class CalculateMaximumOnGround(object):
 
         return final_parking_available, num_rows, num_cols, num_rows_rotated, num_cols_rotated, parking_available_I, parking_available_II
 
-    def calculate_airfield_orientation(self, airfield_shape):
+    def calculate_airfield_orientation(self, airfield_shape, sr):
         # Calculate the orientation of the airfield based on the longest edge
-        max_length = 0
-        orientation_angle = 0
-        for part in airfield_shape:
-            for i in range(len(part) - 1):
-                p1 = part[i]
-                p2 = part[i + 1]
-                dx = p2.X - p1.X
-                dy = p2.Y - p1.Y
-                length = math.hypot(dx, dy)
-                if length > max_length:
-                    max_length = length
-                    orientation_angle = math.degrees(math.atan2(dy, dx))
+        # max_length = 0
+        # orientation_angle = 0
+        # for row in arcpy.da.SearchCursor(airfield_shape, ["SHAPE@"], spatial_reference=sr):
+        #     for part in row:
+        #         for i in range(len(part) - 1):
+        #             if part[i] and part[i + 1]:
+        #                 p1 = part[i]
+        #                 p2 = part[i + 1]
+        #                 dx = p2.X - p1.X
+        #                 dy = p2.Y - p1.Y
+        #                 length = math.hypot(dx, dy)
+        #                 if length > max_length:
+        #                     max_length = length
+        #                     orientation_angle = math.degrees(math.atan2(dy, dx))
+
+        # Commented out the above code and replaced with CalculatePolygonMainAngle tool
+
+        if "SHAPE_ANGLE" not in [columns.name for columns in arcpy.ListFields(airfield_shape)]:
+            arcpy.management.AddField(airfield_shape, "Shape_Angle", "FLOAT")
+            arcpy.AddMessage("Field 'SHAPE_ANGLE' added to the input table.")
+        else:
+            arcpy.AddMessage("Field 'SHAPE_ANGLE' already exists in the input table.")
+
+        arcpy.cartography.CalculatePolygonMainAngle(airfield_shape, "Shape_Angle", "ARITHMETIC")
+
+        with arcpy.da.SearchCursor(airfield_shape, ["Shape_Angle"]) as cursor:
+            for row in cursor:
+                orientation_angle = row[0]
+
         return orientation_angle
+
+    def convert_and_verify_dimensions(self, airfield_layer, airfield_name, target_sr_code=26917):
+        try:
+            # Define the target spatial reference
+            target_sr = arcpy.SpatialReference(target_sr_code)
+
+            # Get the current spatial reference of the airfield layer
+            current_sr = arcpy.Describe(airfield_layer).spatialReference
+            arcpy.AddMessage(f"Current spatial reference: {current_sr.name}, Units: {current_sr.linearUnitName}")
+
+            # Define the where_clause to filter by airfield name
+            where_clause = f"AFLD_NAME = '{airfield_name}'"
+
+            # Retrieve original dimensions using the where_clause
+            original_length = None
+            original_width = None
+            with arcpy.da.SearchCursor(airfield_layer, ["LENGTH", "WIDTH"], where_clause) as cursor:
+                for row in cursor:
+                    original_length, original_width = row
+                    arcpy.AddMessage(f"Retrieved dimensions: Length={original_length}, Width={original_width}")
+                    break
+                else:
+                    arcpy.AddError(f"Airfield '{airfield_name}' not found or dimensions not available.")
+                    return
+
+            # Check if conversion is necessary
+            if current_sr.factoryCode != target_sr_code:
+                arcpy.AddMessage(f"Converting airfield layer from {current_sr.name} to {target_sr.name}...")
+
+                # Define the output path for the converted layer
+                converted_layer = arcpy.env.scratchGDB + "/converted_airfield"
+
+                # Perform the conversion
+                arcpy.Project_management(airfield_layer, converted_layer, target_sr)
+
+                # Verify the conversion
+                converted_sr = arcpy.Describe(converted_layer).spatialReference
+                arcpy.AddMessage(f"Converted spatial reference: {converted_sr.name}, Units: {converted_sr.linearUnitName}")
+
+                # Check if units need conversion
+                if current_sr.linearUnitName != target_sr.linearUnitName:
+                    arcpy.AddMessage("Units differ between current and target spatial reference. Applying conversion factor...")
+
+                    # Example conversion factor from feet to meters
+                    conversion_factor = 0.3048 if 'foot' in current_sr.linearUnitName.lower() else 1.0
+
+                    # Adjust dimensions based on conversion factor
+                    with arcpy.da.UpdateCursor(converted_layer, ["LENGTH", "WIDTH"]) as cursor:
+                        for row in cursor:
+                            if row[0] is not None:
+                                row[0] = original_length * conversion_factor  # Convert length
+                            if row[1] is not None:
+                                row[1] = original_width * conversion_factor  # Convert width
+                            cursor.updateRow(row)
+
+                arcpy.AddMessage("Conversion and verification successful. Using converted airfield layer.")
+                return converted_layer
+            else:
+                # If no conversion is needed, return the original layer
+                return airfield_layer
+
+        except Exception as e:
+            arcpy.AddError(f"An error occurred: {str(e)}")
+            arcpy.AddError(traceback.format_exc())
+            return airfield_layer
 
     def execute(self, parameters, messages):
         # Extract parameter values
@@ -539,28 +322,58 @@ class CalculateMaximumOnGround(object):
 
         try:
             # Get the spatial reference of the airfield layer
-            airfield_sr = arcpy.Describe(airfield_layer).spatialReference
+            current_sr = arcpy.Describe(airfield_layer).spatialReference
+
+            # Define the target spatial reference
+            target_sr_code = 26917  # NAD_1983_UTM_Zone_17N
+            target_sr = arcpy.SpatialReference(target_sr_code)
+
+            # Check if conversion is necessary
+            if current_sr.factoryCode != target_sr_code:
+                arcpy.AddMessage(f"Converting airfield layer from {current_sr.name} to {target_sr.name}...")
+
+                # Define the output path for the converted layer
+                converted_layer = arcpy.env.scratchGDB + "/converted_airfield"
+
+                # Perform the conversion
+                arcpy.Project_management(airfield_layer, converted_layer, target_sr)
+
+                # Use the converted layer for further processing
+                airfield_layer = converted_layer
+                arcpy.AddMessage("Conversion successful. Using converted airfield layer.")
 
             # Ensure the airfield layer is in a projected coordinate system
-            if airfield_sr.type != 'Projected':
+            final_sr = arcpy.Describe(airfield_layer).spatialReference
+            if final_sr.type != 'Projected':
                 arcpy.AddError("Airfield layer must be in a projected coordinate system with linear units (e.g., meters or feet).")
                 return
 
-            sr = airfield_sr
-
             # Get airfield geometry
-            where_clause = f"AFLD_NAME = '{airfield_name}'"
-            with arcpy.da.SearchCursor(airfield_layer, ["SHAPE@", "LENGTH", "WIDTH"], where_clause, spatial_reference=sr) as cursor:
+            with arcpy.da.SearchCursor(airfield_layer, ["SHAPE@", "LENGTH", "WIDTH"], spatial_reference=final_sr) as cursor:
                 for row in cursor:
                     airfield_shape, default_length, default_width = row
+                    if airfield_shape is None:
+                        arcpy.AddError("Airfield shape is None. Please ensure a valid area is selected.")
+                        return
                     break
                 else:
-                    arcpy.AddError(f"Airfield '{airfield_name}' not found.")
+                    arcpy.AddError(f"Airfield '{airfield_layer}' not found.")
                     return
 
-            # Determine orientation angle
-            angle = self.calculate_airfield_orientation(airfield_shape)
-            arcpy.AddMessage(f"Calculated airfield orientation: {angle} degrees")
+            # Use CalculatePolygonMainAngle to determine orientation angle
+            if "SHAPE_ANGLE" not in [field.name for field in arcpy.ListFields(airfield_layer)]:
+                arcpy.management.AddField(airfield_layer, "Shape_Angle", "FLOAT")
+                arcpy.AddMessage("Field 'SHAPE_ANGLE' added to the input table.")
+            else:
+                arcpy.AddMessage("Field 'SHAPE_ANGLE' already exists in the input table.")
+
+            arcpy.cartography.CalculatePolygonMainAngle(airfield_layer, "Shape_Angle", "ARITHMETIC")
+
+            with arcpy.da.SearchCursor(airfield_layer, ["Shape_Angle"]) as cursor:
+                for row in cursor:
+                    angle = row[0]
+                    arcpy.AddMessage(f"Calculated airfield orientation: {angle} degrees")
+                    break
 
             # Get airfield dimensions
             if enable_advanced_settings and manual_length is not None and manual_width is not None:
