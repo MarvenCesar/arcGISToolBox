@@ -1,9 +1,7 @@
 import arcpy
-import pandas as pd
 import os
 import math
 import traceback
-import numpy as np
 
 class Toolbox(object):
     def __init__(self):
