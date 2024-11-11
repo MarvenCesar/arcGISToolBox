@@ -124,28 +124,17 @@ class CalculateMaximumOnGround(object):
         interior_taxi_width = 0
         peripheral_taxi_width = 0
 
-        # Wingspan is assumed to be in feet
-        wingspan_ft = aircraft_wingspan
-
         # Determine taxiway widths based on wingspan
-        if wingspan_ft >= 110:  # Aircraft with wingspan >= 110 ft
-            peripheral_taxi_width = 50  # Wingtip clearance for moving aircraft on peripheral
-            interior_taxi_width = 30 + 30  # Wingtip clearance on each side for moving aircraft between parked
-        else:  # Aircraft with wingspan < 110 ft
-            peripheral_taxi_width = 30  # Wingtip clearance for moving aircraft on peripheral
-            interior_taxi_width = 20 + 20  # Wingtip clearance on each side for moving aircraft between parked
-
-        return interior_taxi_width, peripheral_taxi_width
-
-    def calculate_parking_available(self, apron_length, apron_width, aircraft_length, aircraft_wingspan):
-        # Calculate the taxiway dimensions based on the aircraft specifications
         if aircraft_wingspan >= 110:  # Condition for larger aircraft
             interior_taxi_width = 30 + aircraft_wingspan + 30  # Larger aircraft calculation
         else:
             interior_taxi_width = 20 + aircraft_wingspan + 20  # Smaller aircraft calculation
 
         peripheral_taxi_width = 50 + (aircraft_wingspan / 2) + 37.5  # Peripheral Taxi Width
-        wingtip_between_parked = 25  # Space between parked aircraft
+
+        return interior_taxi_width, peripheral_taxi_width
+
+    def calculate_parking_available(self, apron_length, apron_width, aircraft_length, aircraft_wingspan, interior_taxi_width, peripheral_taxi_width, wingtip_between_parked):
 
         # I. Standard apron configuration
         # 1) Determine number of rows
@@ -390,7 +379,7 @@ class CalculateMaximumOnGround(object):
             # Calculate parking availability
             (parking_available, num_rows_standard, num_cols_standard, num_rows_rotated, num_cols_rotated,
              parking_available_I, parking_available_II) = self.calculate_parking_available(
-                apron_length, apron_width, aircraft_length, aircraft_wingspan)
+                apron_length, apron_width, aircraft_length, aircraft_wingspan, interior_taxi_width, peripheral_taxi_width, wingtip_between_parked)
 
             arcpy.AddMessage(f"Final Parking Available for {mds}: {parking_available}")
 
