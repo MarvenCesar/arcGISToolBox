@@ -3,7 +3,6 @@ import pandas as pd
 import os
 import math
 import traceback
-import random
 import numpy as np
 
 class Toolbox(object):
