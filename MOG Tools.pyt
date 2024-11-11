@@ -187,7 +187,7 @@ class CalculateMaximumOnGround(object):
 
         return final_parking_available, num_rows, num_cols, num_rows_rotated, num_cols_rotated, parking_available_I, parking_available_II
 
-    def calculate_airfield_orientation(self, airfield_shape, sr):
+    def calculate_airfield_orientation(self, airfield_shape):
         # Calculate the orientation of the airfield based on the longest edge
         # max_length = 0
         # orientation_angle = 0
@@ -206,11 +206,11 @@ class CalculateMaximumOnGround(object):
 
         # Commented out the above code and replaced with CalculatePolygonMainAngle tool
 
-        if "SHAPE_ANGLE" not in [columns.name for columns in arcpy.ListFields(airfield_shape)]:
+        if "Shape_Angle" not in [columns.name for columns in arcpy.ListFields(airfield_shape)]:
             arcpy.management.AddField(airfield_shape, "Shape_Angle", "FLOAT")
-            arcpy.AddMessage("Field 'SHAPE_ANGLE' added to the input table.")
+            arcpy.AddMessage("Field 'Shape_Angle' added to the input table.")
         else:
-            arcpy.AddMessage("Field 'SHAPE_ANGLE' already exists in the input table.")
+            arcpy.AddMessage("Field 'Shape_Angle' already exists in the input table.")
 
         arcpy.cartography.CalculatePolygonMainAngle(airfield_shape, "Shape_Angle", "ARITHMETIC")
 
@@ -254,7 +254,7 @@ class CalculateMaximumOnGround(object):
                     return
 
             # Determine orientation angle
-            angle = self.calculate_airfield_orientation(airfield_layer, sr)
+            angle = self.calculate_airfield_orientation(airfield_layer)
             arcpy.AddMessage(f"Calculated airfield orientation: {angle} degrees")
 
             # Get airfield dimensions
@@ -335,22 +335,22 @@ class CalculateMaximumOnGround(object):
             # Ensure feature classes do not already exist. If they do, delete them.
             for fc in [out_aircraft_fc, out_constraint_fc]:
                 if arcpy.Exists(fc):
-                    arcpy.Delete_management(fc)
+                    arcpy.management.Delete(fc)
                     arcpy.AddMessage(f"Existing feature class '{fc}' deleted.")
 
             # Create Aircraft Feature Class
-            arcpy.CreateFeatureclass_management(os.path.dirname(out_aircraft_fc), os.path.basename(out_aircraft_fc), "POLYGON", spatial_reference=sr)
+            arcpy.management.CreateFeatureclass(os.path.dirname(out_aircraft_fc), os.path.basename(out_aircraft_fc), "POLYGON", spatial_reference=sr)
             # Add necessary fields to Aircraft Feature Class
-            arcpy.AddField_management(out_aircraft_fc, "MDS", "TEXT")
-            arcpy.AddField_management(out_aircraft_fc, "AircraftID", "LONG")
-            arcpy.AddField_management(out_aircraft_fc, "Rotation", "DOUBLE")
-            arcpy.AddField_management(out_aircraft_fc, "Type", "TEXT")  # New field to identify type
+            arcpy.management.AddField(out_aircraft_fc, "MDS", "TEXT")
+            arcpy.management.AddField(out_aircraft_fc, "AircraftID", "LONG")
+            arcpy.management.AddField(out_aircraft_fc, "Rotation", "DOUBLE")
+            arcpy.management.AddField(out_aircraft_fc, "Type", "TEXT")  # New field to identify type
 
             # Create Constraint Feature Class
-            arcpy.CreateFeatureclass_management(os.path.dirname(out_constraint_fc), os.path.basename(out_constraint_fc), "POLYGON", spatial_reference=sr)
+            arcpy.management.CreateFeatureclass(os.path.dirname(out_constraint_fc), os.path.basename(out_constraint_fc), "POLYGON", spatial_reference=sr)
             # Add necessary fields to Constraint Feature Class
-            arcpy.AddField_management(out_constraint_fc, "AircraftID", "LONG")  # To associate with aircraft
-            arcpy.AddField_management(out_constraint_fc, "Type", "TEXT")  # New field to identify type
+            arcpy.management.AddField(out_constraint_fc, "AircraftID", "LONG")  # To associate with aircraft
+            arcpy.management.AddField(out_constraint_fc, "Type", "TEXT")  # New field to identify type
 
             # Determine the starting point (use airfield centroid)
             start_point = airfield_shape.centroid
@@ -403,7 +403,7 @@ class CalculateMaximumOnGround(object):
                     aircraft_polygon = arcpy.Polygon(polygon_array, sr)
 
                     # Check if aircraft polygon is within airfield
-                    if airfield_shape.contains(aircraft_polygon.centroid):
+                    if airfield_shape.contains(aircraft_polygon):
                         # Insert aircraft polygon
                         aircraft_cursor.insertRow([aircraft_polygon, mds, aircraft_id, angle % 360, "Aircraft"])
                         arcpy.AddMessage(f"Placed {mds} at ({x_global}, {y_global}) - ID: {aircraft_id}/{parking_available}")
