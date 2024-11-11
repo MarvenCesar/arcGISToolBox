@@ -4,6 +4,7 @@ import os
 import math
 import traceback
 import random
+import numpy as np
 
 class Toolbox(object):
     def __init__(self):
@@ -209,24 +210,7 @@ class CalculateMaximumOnGround(object):
         return final_parking_available, num_rows, num_cols, num_rows_rotated, num_cols_rotated, parking_available_I, parking_available_II
 
     def calculate_airfield_orientation(self, airfield_shape, sr):
-        # Calculate the orientation of the airfield based on the longest edge
-        # max_length = 0
-        # orientation_angle = 0
-        # for row in arcpy.da.SearchCursor(airfield_shape, ["SHAPE@"], spatial_reference=sr):
-        #     for part in row:
-        #         for i in range(len(part) - 1):
-        #             if part[i] and part[i + 1]:
-        #                 p1 = part[i]
-        #                 p2 = part[i + 1]
-        #                 dx = p2.X - p1.X
-        #                 dy = p2.Y - p1.Y
-        #                 length = math.hypot(dx, dy)
-        #                 if length > max_length:
-        #                     max_length = length
-        #                     orientation_angle = math.degrees(math.atan2(dy, dx))
-
-        # Commented out the above code and replaced with CalculatePolygonMainAngle tool
-
+        # Use the CalculatePolygonMainAngle tool to determine the airfield orientation
         if "SHAPE_ANGLE" not in [columns.name for columns in arcpy.ListFields(airfield_shape)]:
             arcpy.management.AddField(airfield_shape, "Shape_Angle", "FLOAT")
             arcpy.AddMessage("Field 'SHAPE_ANGLE' added to the input table.")
@@ -321,12 +305,28 @@ class CalculateMaximumOnGround(object):
         out_constraint_fc = parameters[10].valueAsText  # Output Constraint Feature Class
 
         try:
-            # Get the spatial reference of the airfield layer
-            current_sr = arcpy.Describe(airfield_layer).spatialReference
-
             # Define the target spatial reference
-            target_sr_code = 26917  # NAD_1983_UTM_Zone_17N
+            target_sr_code = 26917
             target_sr = arcpy.SpatialReference(target_sr_code)
+
+            # Get the current spatial reference of the airfield layer
+            current_sr = arcpy.Describe(airfield_layer).spatialReference
+            arcpy.AddMessage(f"Current spatial reference: {current_sr.name}, Units: {current_sr.linearUnitName}")
+
+            # Define the where_clause to filter by airfield name
+            where_clause = f"AFLD_NAME = '{airfield_name}'"
+
+            # Retrieve original dimensions using the where_clause
+            original_length = None
+            original_width = None
+            with arcpy.da.SearchCursor(airfield_layer, ["LENGTH", "WIDTH"], where_clause) as cursor:
+                for row in cursor:
+                    original_length, original_width = row
+                    arcpy.AddMessage(f"Original dimensions before conversion: Length={original_length}, Width={original_width}")
+                    break
+                else:
+                    arcpy.AddError(f"Airfield '{airfield_name}' not found.")
+                    return
 
             # Check if conversion is necessary
             if current_sr.factoryCode != target_sr_code:
@@ -338,9 +338,28 @@ class CalculateMaximumOnGround(object):
                 # Perform the conversion
                 arcpy.Project_management(airfield_layer, converted_layer, target_sr)
 
-                # Use the converted layer for further processing
+                # Verify the conversion
+                converted_sr = arcpy.Describe(converted_layer).spatialReference
+                arcpy.AddMessage(f"Converted spatial reference: {converted_sr.name}, Units: {converted_sr.linearUnitName}")
+
+                # Check if units need conversion
+                if current_sr.linearUnitName != target_sr.linearUnitName:
+                    arcpy.AddMessage("Units differ between current and target spatial reference. Applying conversion factor...")
+
+                    # Example conversion factor from feet to meters
+                    conversion_factor = 0.3048 if 'foot' in current_sr.linearUnitName.lower() else 1.0
+
+                    # Adjust dimensions based on conversion factor
+                    with arcpy.da.UpdateCursor(converted_layer, ["LENGTH", "WIDTH"]) as cursor:
+                        for row in cursor:
+                            if row[0] is not None:
+                                row[0] = original_length * conversion_factor  # Convert length
+                            if row[1] is not None:
+                                row[1] = original_width * conversion_factor  # Convert width
+                            cursor.updateRow(row)
+
+                arcpy.AddMessage("Conversion and verification successful. Using converted airfield layer.")
                 airfield_layer = converted_layer
-                arcpy.AddMessage("Conversion successful. Using converted airfield layer.")
 
             # Ensure the airfield layer is in a projected coordinate system
             final_sr = arcpy.Describe(airfield_layer).spatialReference
@@ -348,32 +367,21 @@ class CalculateMaximumOnGround(object):
                 arcpy.AddError("Airfield layer must be in a projected coordinate system with linear units (e.g., meters or feet).")
                 return
 
+            sr = final_sr
+
             # Get airfield geometry
-            with arcpy.da.SearchCursor(airfield_layer, ["SHAPE@", "LENGTH", "WIDTH"], spatial_reference=final_sr) as cursor:
+            with arcpy.da.SearchCursor(airfield_layer, ["SHAPE@", "LENGTH", "WIDTH"], where_clause, spatial_reference=sr) as cursor:
                 for row in cursor:
                     airfield_shape, default_length, default_width = row
-                    if airfield_shape is None:
-                        arcpy.AddError("Airfield shape is None. Please ensure a valid area is selected.")
-                        return
+                    arcpy.AddMessage(f"Retrieved airfield dimensions: Length={default_length}, Width={default_width}")
                     break
                 else:
-                    arcpy.AddError(f"Airfield '{airfield_layer}' not found.")
+                    arcpy.AddError(f"Airfield '{airfield_name}' not found.")
                     return
 
-            # Use CalculatePolygonMainAngle to determine orientation angle
-            if "SHAPE_ANGLE" not in [field.name for field in arcpy.ListFields(airfield_layer)]:
-                arcpy.management.AddField(airfield_layer, "Shape_Angle", "FLOAT")
-                arcpy.AddMessage("Field 'SHAPE_ANGLE' added to the input table.")
-            else:
-                arcpy.AddMessage("Field 'SHAPE_ANGLE' already exists in the input table.")
-
-            arcpy.cartography.CalculatePolygonMainAngle(airfield_layer, "Shape_Angle", "ARITHMETIC")
-
-            with arcpy.da.SearchCursor(airfield_layer, ["Shape_Angle"]) as cursor:
-                for row in cursor:
-                    angle = row[0]
-                    arcpy.AddMessage(f"Calculated airfield orientation: {angle} degrees")
-                    break
+            # Determine orientation angle using the new method
+            angle = self.calculate_airfield_orientation(airfield_layer, sr)
+            arcpy.AddMessage(f"Calculated airfield orientation: {angle} degrees")
 
             # Get airfield dimensions
             if enable_advanced_settings and manual_length is not None and manual_width is not None:
