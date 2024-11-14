@@ -2,6 +2,7 @@ import arcpy
 import os
 import math
 import traceback
+import random
 
 class Toolbox(object):
     def __init__(self):
@@ -376,32 +377,13 @@ class CalculateMaximumOnGround(object):
             wingtip_between_parked = 25  # Adjust as necessary
             arcpy.AddMessage(f"Using wingtip clearance between parked aircraft: {wingtip_between_parked} ft")
 
-            # Calculate parking availability
-            (parking_available, num_rows_standard, num_cols_standard, num_rows_rotated, num_cols_rotated,
-             parking_available_I, parking_available_II) = self.calculate_parking_available(
+            # Run genetic algorithm to find the best parking configuration
+            best_solution, max_parking = self.genetic_algorithm(
                 apron_length, apron_width, aircraft_length, aircraft_wingspan, interior_taxi_width, peripheral_taxi_width, wingtip_between_parked)
 
-            arcpy.AddMessage(f"Final Parking Available for {mds}: {parking_available}")
+            arcpy.AddMessage(f"Final Parking Available for {mds}: {max_parking}")
 
-            # Decide whether to use standard or rotated configuration based on which has more parking available
-            if parking_available == parking_available_I:
-                # Standard configuration
-                num_rows_to_place = num_rows_standard
-                num_cols_to_place = num_cols_standard
-                dx = aircraft_wingspan + wingtip_between_parked
-                dy = aircraft_length + interior_taxi_width
-                arcpy.AddMessage("Using standard configuration for aircraft placement.")
-            else:
-                # Rotated configuration
-                num_rows_to_place = num_rows_rotated
-                num_cols_to_place = num_cols_rotated
-                dx = aircraft_wingspan + wingtip_between_parked
-                dy = aircraft_length + interior_taxi_width
-                # Swap dx and dy for rotated configuration
-                dx, dy = dy, dx
-                angle += 90  # Adjust angle by 90 degrees for rotation
-                arcpy.AddMessage("Using rotated configuration for aircraft placement.")
-
+            # Visualization part (same as before)
             # Convert dimensions from feet to spatial reference units
             unit_name = sr.linearUnitName.lower()
             if 'foot' in unit_name:
@@ -412,8 +394,8 @@ class CalculateMaximumOnGround(object):
                 arcpy.AddError(f"Unsupported linear unit in spatial reference: {sr.linearUnitName}")
                 return
 
-            dx_units = dx * unit_factor
-            dy_units = dy * unit_factor
+            dx_units = (aircraft_wingspan + wingtip_between_parked) * unit_factor
+            dy_units = (aircraft_length + interior_taxi_width) * unit_factor
 
             # Create separate feature classes for aircraft and constraints
             # Aircraft Feature Class already defined as out_aircraft_fc
@@ -445,11 +427,10 @@ class CalculateMaximumOnGround(object):
 
             # Generate grid coordinates centered at (0, 0)
             grid_points = []
-            for i in range(num_rows_to_place):
-                for j in range(num_cols_to_place):
-                    x = j * dx_units - ((num_cols_to_place - 1) * dx_units) / 2
-                    y = i * dy_units - ((num_rows_to_place - 1) * dy_units) / 2
-                    grid_points.append((x, y))
+            for row, col in best_solution:
+                x = col * dx_units - ((max_parking - 1) * dx_units) / 2
+                y = row * dy_units - ((max_parking - 1) * dy_units) / 2
+                grid_points.append((x, y))
 
             # Rotate and translate grid points
             angle_rad = math.radians(angle)
@@ -493,7 +474,7 @@ class CalculateMaximumOnGround(object):
                     if airfield_shape.contains(aircraft_polygon):
                         # Insert aircraft polygon
                         aircraft_cursor.insertRow([aircraft_polygon, mds, aircraft_id, angle % 360, "Aircraft"])
-                        arcpy.AddMessage(f"Placed {mds} at ({x_global}, {y_global}) - ID: {aircraft_id}/{parking_available}")
+                        arcpy.AddMessage(f"Placed {mds} at ({x_global}, {y_global}) - ID: {aircraft_id}/{max_parking}")
                         # Store aircraft data for constraint creation
                         aircraft_records.append({
                             "AircraftID": aircraft_id,
@@ -589,3 +570,56 @@ class CalculateMaximumOnGround(object):
                 return float(row[0])  # Return the requested dimension as float
         arcpy.AddError(f"Airfield '{airfield_layer}' not found or dimension '{dimension_field}' not available.")
         return None  # Return None if not found
+
+    def genetic_algorithm(self, apron_length, apron_width, aircraft_length, aircraft_wingspan, interior_taxi_width, peripheral_taxi_width, wingtip_between_parked, population_size=50, generations=100, mutation_rate=0.01):
+        def create_chromosome():
+            # Create a random chromosome (solution)
+            num_rows = max(1, math.floor((apron_length + interior_taxi_width) / (aircraft_length + interior_taxi_width)))
+            num_cols = max(1, math.floor((apron_width + wingtip_between_parked) / (aircraft_wingspan + wingtip_between_parked)))
+            return [(random.randint(0, num_rows - 1), random.randint(0, num_cols - 1)) for _ in range(num_rows * num_cols)]
+
+        def fitness(chromosome):
+            # Calculate the fitness of a chromosome
+            occupied_positions = set()
+            for row, col in chromosome:
+                if (row, col) in occupied_positions:
+                    continue
+                occupied_positions.add((row, col))
+            return len(occupied_positions)
+
+        def crossover(parent1, parent2):
+            # Perform crossover between two parents
+            crossover_point = random.randint(0, len(parent1) - 1)
+            child1 = parent1[:crossover_point] + parent2[crossover_point:]
+            child2 = parent2[:crossover_point] + parent1[crossover_point:]
+            return child1, child2
+
+        def mutate(chromosome):
+            # Perform mutation on a chromosome
+            if random.random() < mutation_rate:
+                index = random.randint(0, len(chromosome) - 1)
+                num_rows = max(1, math.floor((apron_length + interior_taxi_width) / (aircraft_length + interior_taxi_width)))
+                num_cols = max(1, math.floor((apron_width + wingtip_between_parked) / (aircraft_wingspan + wingtip_between_parked)))
+                chromosome[index] = (random.randint(0, num_rows - 1), random.randint(0, num_cols - 1))
+            return chromosome
+
+        # Initialize population
+        population = [create_chromosome() for _ in range(population_size)]
+
+        for generation in range(generations):
+            # Evaluate fitness of each chromosome
+            population = sorted(population, key=fitness, reverse=True)
+            new_population = population[:population_size // 2]
+
+            # Create new population through crossover and mutation
+            while len(new_population) < population_size:
+                parent1, parent2 = random.sample(population[:population_size // 2], 2)
+                child1, child2 = crossover(parent1, parent2)
+                new_population.append(mutate(child1))
+                new_population.append(mutate(child2))
+
+            population = new_population
+
+        # Return the best solution
+        best_solution = max(population, key=fitness)
+        return best_solution, fitness(best_solution)
