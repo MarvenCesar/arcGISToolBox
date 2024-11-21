@@ -1,20 +1,13 @@
 import arcpy
-import pandas as pd
 import os
 import math
 import traceback
-import random
-import numpy as np
 
 class Toolbox(object):
     def __init__(self):
         self.label = "Aircraft MOG Optimization"
         self.alias = "AircraftMOG"
         self.tools = [CalculateMaximumOnGround]
-
-
-            
-
 
 class CalculateMaximumOnGround(object):
     def __init__(self):
@@ -39,12 +32,12 @@ class CalculateMaximumOnGround(object):
                 parameterType="Required",
                 direction="Input"),
             # Airfield Name
-            arcpy.Parameter(
-                displayName="Airfield Name",
-                name="airfield_name",
-                datatype="GPString",
-                parameterType="Required",
-                direction="Input"),
+            # arcpy.Parameter(
+            #     displayName="Airfield Name",
+            #     name="airfield_name",
+            #     datatype="GPString",
+            #     parameterType="Required",
+            #     direction="Input"),
             # Select Aircraft (MDS)
             arcpy.Parameter(
                 displayName="Select Aircraft (MDS)",
@@ -101,44 +94,34 @@ class CalculateMaximumOnGround(object):
                 datatype="DEFeatureClass",
                 parameterType="Required",
                 direction="Output"),
+            # Use Genetic Algorithm
+            arcpy.Parameter(
+                displayName="Use Genetic Algorithm",
+                name="use_genetic_algorithm",
+                datatype="GPBoolean",
+                parameterType="Optional",
+                direction="Input"),
         ]
 
         # Disable advanced settings parameters by default
-        for param in params[5:9]:
+        for param in params[4:8]:
             param.enabled = False
 
         return params
 
     def updateParameters(self, parameters):
         # Populate the Aircraft Name (MDS) dropdown
-        if parameters[0].altered or not parameters[3].altered:
+        if parameters[0].altered or not parameters[2].altered:
             aircraft_table = parameters[0].valueAsText
             if aircraft_table:
                 try:
-                    mds_values = set()
-                    with arcpy.da.SearchCursor(aircraft_table, ["MDS"]) as cursor:
-                        for row in cursor:
-                            mds_values.add(row[0])
-                    parameters[3].filter.list = sorted(mds_values)
+                    aircraft_names = [row[0] for row in arcpy.da.SearchCursor(aircraft_table, "MDS") if row[0]] # Check if row[0] is valid and not <Null>. If <null>, filter.list breaks
+                    parameters[2].filter.list = aircraft_names
                 except Exception as e:
                     arcpy.AddError(f"Error loading aircraft names: {e}")
 
-        # Populate the Airfield Name dropdown
-        if parameters[1].altered or not parameters[2].altered:
-            airfield_layer = parameters[1].valueAsText
-            if airfield_layer:
-                try:
-                    airfield_names = set()
-                    with arcpy.da.SearchCursor(airfield_layer, ["AFLD_NAME"]) as cursor:
-                        for row in cursor:
-                            airfield_names.add(row[0])
-                    parameters[2].filter.list = sorted(airfield_names)
-                except Exception as e:
-                    arcpy.AddError(f"Error loading airfield names: {e}")
-
-        # Enable or disable advanced settings based on the checkbox
-        enable_advanced_settings = parameters[4].value
-        for param in parameters[5:9]:
+        enable_advanced_settings = parameters[3].value
+        for param in parameters[4:8]:
             param.enabled = enable_advanced_settings
 
         return
@@ -148,28 +131,17 @@ class CalculateMaximumOnGround(object):
         interior_taxi_width = 0
         peripheral_taxi_width = 0
 
-        # Wingspan is assumed to be in feet
-        wingspan_ft = aircraft_wingspan
-
         # Determine taxiway widths based on wingspan
-        if wingspan_ft >= 110:  # Aircraft with wingspan >= 110 ft
-            peripheral_taxi_width = 50  # Wingtip clearance for moving aircraft on peripheral
-            interior_taxi_width = 30 + 30  # Wingtip clearance on each side for moving aircraft between parked
-        else:  # Aircraft with wingspan < 110 ft
-            peripheral_taxi_width = 30  # Wingtip clearance for moving aircraft on peripheral
-            interior_taxi_width = 20 + 20  # Wingtip clearance on each side for moving aircraft between parked
-
-        return interior_taxi_width, peripheral_taxi_width
-
-    def calculate_parking_available(self, apron_length, apron_width, aircraft_length, aircraft_wingspan):
-        # Calculate the taxiway dimensions based on the aircraft specifications
         if aircraft_wingspan >= 110:  # Condition for larger aircraft
             interior_taxi_width = 30 + aircraft_wingspan + 30  # Larger aircraft calculation
         else:
             interior_taxi_width = 20 + aircraft_wingspan + 20  # Smaller aircraft calculation
 
         peripheral_taxi_width = 50 + (aircraft_wingspan / 2) + 37.5  # Peripheral Taxi Width
-        wingtip_between_parked = 25  # Space between parked aircraft
+
+        return interior_taxi_width, peripheral_taxi_width
+
+    def calculate_parking_available(self, apron_length, apron_width, aircraft_length, aircraft_wingspan, interior_taxi_width, peripheral_taxi_width, wingtip_between_parked):
 
         # I. Standard apron configuration
         # 1) Determine number of rows
@@ -211,11 +183,11 @@ class CalculateMaximumOnGround(object):
 
     def calculate_airfield_orientation(self, airfield_shape, sr):
         # Use the CalculatePolygonMainAngle tool to determine the airfield orientation
-        if "SHAPE_ANGLE" not in [columns.name for columns in arcpy.ListFields(airfield_shape)]:
+        if "Shape_Angle" not in [columns.name for columns in arcpy.ListFields(airfield_shape)]:
             arcpy.management.AddField(airfield_shape, "Shape_Angle", "FLOAT")
-            arcpy.AddMessage("Field 'SHAPE_ANGLE' added to the input table.")
+            arcpy.AddMessage("Field 'Shape_Angle' added to the input table.")
         else:
-            arcpy.AddMessage("Field 'SHAPE_ANGLE' already exists in the input table.")
+            arcpy.AddMessage("Field 'Shape_Angle' already exists in the input table.")
 
         arcpy.cartography.CalculatePolygonMainAngle(airfield_shape, "Shape_Angle", "ARITHMETIC")
 
@@ -225,7 +197,7 @@ class CalculateMaximumOnGround(object):
 
         return orientation_angle
 
-    def convert_and_verify_dimensions(self, airfield_layer, airfield_name, target_sr_code=26917):
+    def convert_and_verify_dimensions(self, airfield_layer, airfield_name, target_sr_code=32617):
         try:
             # Define the target spatial reference
             target_sr = arcpy.SpatialReference(target_sr_code)
@@ -257,7 +229,7 @@ class CalculateMaximumOnGround(object):
                 converted_layer = arcpy.env.scratchGDB + "/converted_airfield"
 
                 # Perform the conversion
-                arcpy.Project_management(airfield_layer, converted_layer, target_sr)
+                arcpy.management.Project(airfield_layer, converted_layer, target_sr)
 
                 # Verify the conversion
                 converted_sr = arcpy.Describe(converted_layer).spatialReference
@@ -290,19 +262,66 @@ class CalculateMaximumOnGround(object):
             arcpy.AddError(traceback.format_exc())
             return airfield_layer
 
+    def genetic_algorithm(self, apron_length, apron_width, aircraft_length, aircraft_wingspan, interior_taxi_width, peripheral_taxi_width, wingtip_between_parked, population_size=50, generations=100, mutation_rate=0.01):
+        import random
+
+        def create_chromosome():
+            num_rows = max(1, math.floor((apron_length + interior_taxi_width) / (aircraft_length + interior_taxi_width)))
+            num_cols = max(1, math.floor((apron_width + wingtip_between_parked) / (aircraft_wingspan + wingtip_between_parked)))
+            return [(random.randint(0, num_rows - 1), random.randint(0, num_cols - 1)) for _ in range(num_rows * num_cols)]
+
+        def fitness(chromosome):
+            occupied_positions = set()
+            for row, col in chromosome:
+                if (row, col) in occupied_positions:
+                    continue
+                occupied_positions.add((row, col))
+            return len(occupied_positions)
+
+        def crossover(parent1, parent2):
+            crossover_point = random.randint(0, len(parent1) - 1)
+            child1 = parent1[:crossover_point] + parent2[crossover_point:]
+            child2 = parent2[:crossover_point] + parent1[crossover_point:]
+            return child1, child2
+
+        def mutate(chromosome):
+            if random.random() < mutation_rate:
+                index = random.randint(0, len(chromosome) - 1)
+                num_rows = max(1, math.floor((apron_length + interior_taxi_width) / (aircraft_length + interior_taxi_width)))
+                num_cols = max(1, math.floor((apron_width + wingtip_between_parked) / (aircraft_wingspan + wingtip_between_parked)))
+                chromosome[index] = (random.randint(0, num_rows - 1), random.randint(0, num_cols - 1))
+            return chromosome
+
+        population = [create_chromosome() for _ in range(population_size)]
+
+        for generation in range(generations):
+            population = sorted(population, key=fitness, reverse=True)
+            new_population = population[:population_size // 2]
+
+            while len(new_population) < population_size:
+                parent1, parent2 = random.sample(population[:population_size // 2], 2)
+                child1, child2 = crossover(parent1, parent2)
+                new_population.append(mutate(child1))
+                new_population.append(mutate(child2))
+
+            population = new_population
+
+        best_solution = max(population, key=fitness)
+        return best_solution, fitness(best_solution)
+
     def execute(self, parameters, messages):
         # Extract parameter values
         aircraft_table = parameters[0].valueAsText
         airfield_layer = parameters[1].valueAsText
-        airfield_name = parameters[2].valueAsText
-        selected_aircraft = parameters[3].valueAsText
-        enable_advanced_settings = parameters[4].value
-        manual_length = parameters[5].value
-        manual_width = parameters[6].value
-        manual_interior_taxi_width = parameters[7].value
-        manual_peripheral_taxi_width = parameters[8].value
-        out_aircraft_fc = parameters[9].valueAsText  # Output Aircraft Feature Class
-        out_constraint_fc = parameters[10].valueAsText  # Output Constraint Feature Class
+        selected_aircraft = parameters[2].valueAsText
+        enable_advanced_settings = parameters[3].value
+        manual_length = parameters[4].value
+        manual_width = parameters[5].value
+        manual_interior_taxi_width = parameters[6].value
+        manual_peripheral_taxi_width = parameters[7].value
+        out_aircraft_fc = parameters[8].valueAsText  # Output Aircraft Feature Class
+        out_constraint_fc = parameters[9].valueAsText  # Output Constraint Feature Class
+        use_genetic_algorithm = parameters[10].value  # Use Genetic Algorithm parameter
 
         try:
             # Define the target spatial reference
@@ -313,19 +332,16 @@ class CalculateMaximumOnGround(object):
             current_sr = arcpy.Describe(airfield_layer).spatialReference
             arcpy.AddMessage(f"Current spatial reference: {current_sr.name}, Units: {current_sr.linearUnitName}")
 
-            # Define the where_clause to filter by airfield name
-            where_clause = f"AFLD_NAME = '{airfield_name}'"
-
             # Retrieve original dimensions using the where_clause
             original_length = None
             original_width = None
-            with arcpy.da.SearchCursor(airfield_layer, ["LENGTH", "WIDTH"], where_clause) as cursor:
+            with arcpy.da.SearchCursor(airfield_layer, ["LENGTH", "WIDTH"]) as cursor:
                 for row in cursor:
                     original_length, original_width = row
                     arcpy.AddMessage(f"Original dimensions before conversion: Length={original_length}, Width={original_width}")
                     break
                 else:
-                    arcpy.AddError(f"Airfield '{airfield_name}' not found.")
+                    arcpy.AddError(f"Airfield '{airfield_layer}' not found.")
                     return
 
             # Check if conversion is necessary
@@ -370,13 +386,13 @@ class CalculateMaximumOnGround(object):
             sr = final_sr
 
             # Get airfield geometry
-            with arcpy.da.SearchCursor(airfield_layer, ["SHAPE@", "LENGTH", "WIDTH"], where_clause, spatial_reference=sr) as cursor:
+            with arcpy.da.SearchCursor(airfield_layer, ["SHAPE@", "LENGTH", "WIDTH"], spatial_reference=sr) as cursor:
                 for row in cursor:
                     airfield_shape, default_length, default_width = row
                     arcpy.AddMessage(f"Retrieved airfield dimensions: Length={default_length}, Width={default_width}")
                     break
                 else:
-                    arcpy.AddError(f"Airfield '{airfield_name}' not found.")
+                    arcpy.AddError(f"Airfield '{airfield_layer}' not found.")
                     return
 
             # Determine orientation angle using the new method
@@ -415,10 +431,19 @@ class CalculateMaximumOnGround(object):
             wingtip_between_parked = 25  # Adjust as necessary
             arcpy.AddMessage(f"Using wingtip clearance between parked aircraft: {wingtip_between_parked} ft")
 
+            if use_genetic_algorithm:
+                arcpy.AddMessage("Running genetic algorithm for MOG calculation...")
+                best_solution, best_fitness = self.genetic_algorithm(
+                    apron_length, apron_width, aircraft_length, aircraft_wingspan,
+                    interior_taxi_width, peripheral_taxi_width, wingtip_between_parked
+                )
+                arcpy.AddMessage(f"Genetic Algorithm Result: Best Fitness = {best_fitness}")
+                return
+
             # Calculate parking availability
             (parking_available, num_rows_standard, num_cols_standard, num_rows_rotated, num_cols_rotated,
              parking_available_I, parking_available_II) = self.calculate_parking_available(
-                apron_length, apron_width, aircraft_length, aircraft_wingspan)
+                apron_length, apron_width, aircraft_length, aircraft_wingspan, interior_taxi_width, peripheral_taxi_width, wingtip_between_parked)
 
             arcpy.AddMessage(f"Final Parking Available for {mds}: {parking_available}")
 
@@ -529,7 +554,7 @@ class CalculateMaximumOnGround(object):
                     aircraft_polygon = arcpy.Polygon(polygon_array, sr)
 
                     # Check if aircraft polygon is within airfield
-                    if airfield_shape.contains(aircraft_polygon.centroid):
+                    if airfield_shape.contains(aircraft_polygon):
                         # Insert aircraft polygon
                         aircraft_cursor.insertRow([aircraft_polygon, mds, aircraft_id, angle % 360, "Aircraft"])
                         arcpy.AddMessage(f"Placed {mds} at ({x_global}, {y_global}) - ID: {aircraft_id}/{parking_available}")
@@ -622,10 +647,9 @@ class CalculateMaximumOnGround(object):
                     break
         return aircraft_data
 
-    def get_airfield_dimension(self, airfield_layer, airfield_name, dimension_field):
-        where_clause = f"AFLD_NAME = '{airfield_name}'"
+    def get_airfield_dimension(self, airfield_layer, dimension_field):
         with arcpy.da.SearchCursor(airfield_layer, [dimension_field]) as cursor:
             for row in cursor:
                 return float(row[0])  # Return the requested dimension as float
-        arcpy.AddError(f"Airfield '{airfield_name}' not found or dimension '{dimension_field}' not available.")
+        arcpy.AddError(f"Airfield '{airfield_layer}' not found or dimension '{dimension_field}' not available.")
         return None  # Return None if not found
