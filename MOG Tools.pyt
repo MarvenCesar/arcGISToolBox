@@ -94,6 +94,13 @@ class CalculateMaximumOnGround(object):
                 datatype="DEFeatureClass",
                 parameterType="Required",
                 direction="Output"),
+            # Use Genetic Algorithm
+            arcpy.Parameter(
+                displayName="Use Genetic Algorithm",
+                name="use_genetic_algorithm",
+                datatype="GPBoolean",
+                parameterType="Optional",
+                direction="Input"),
         ]
 
         # Disable advanced settings parameters by default
@@ -190,7 +197,7 @@ class CalculateMaximumOnGround(object):
 
         return orientation_angle
 
-    def convert_and_verify_dimensions(self, airfield_layer, airfield_name, target_sr_code=26917):
+    def convert_and_verify_dimensions(self, airfield_layer, airfield_name, target_sr_code=32617):
         try:
             # Define the target spatial reference
             target_sr = arcpy.SpatialReference(target_sr_code)
@@ -255,6 +262,53 @@ class CalculateMaximumOnGround(object):
             arcpy.AddError(traceback.format_exc())
             return airfield_layer
 
+    def genetic_algorithm(self, apron_length, apron_width, aircraft_length, aircraft_wingspan, interior_taxi_width, peripheral_taxi_width, wingtip_between_parked, population_size=50, generations=100, mutation_rate=0.01):
+        import random
+
+        def create_chromosome():
+            num_rows = max(1, math.floor((apron_length + interior_taxi_width) / (aircraft_length + interior_taxi_width)))
+            num_cols = max(1, math.floor((apron_width + wingtip_between_parked) / (aircraft_wingspan + wingtip_between_parked)))
+            return [(random.randint(0, num_rows - 1), random.randint(0, num_cols - 1)) for _ in range(num_rows * num_cols)]
+
+        def fitness(chromosome):
+            occupied_positions = set()
+            for row, col in chromosome:
+                if (row, col) in occupied_positions:
+                    continue
+                occupied_positions.add((row, col))
+            return len(occupied_positions)
+
+        def crossover(parent1, parent2):
+            crossover_point = random.randint(0, len(parent1) - 1)
+            child1 = parent1[:crossover_point] + parent2[crossover_point:]
+            child2 = parent2[:crossover_point] + parent1[crossover_point:]
+            return child1, child2
+
+        def mutate(chromosome):
+            if random.random() < mutation_rate:
+                index = random.randint(0, len(chromosome) - 1)
+                num_rows = max(1, math.floor((apron_length + interior_taxi_width) / (aircraft_length + interior_taxi_width)))
+                num_cols = max(1, math.floor((apron_width + wingtip_between_parked) / (aircraft_wingspan + wingtip_between_parked)))
+                chromosome[index] = (random.randint(0, num_rows - 1), random.randint(0, num_cols - 1))
+            return chromosome
+
+        population = [create_chromosome() for _ in range(population_size)]
+
+        for generation in range(generations):
+            population = sorted(population, key=fitness, reverse=True)
+            new_population = population[:population_size // 2]
+
+            while len(new_population) < population_size:
+                parent1, parent2 = random.sample(population[:population_size // 2], 2)
+                child1, child2 = crossover(parent1, parent2)
+                new_population.append(mutate(child1))
+                new_population.append(mutate(child2))
+
+            population = new_population
+
+        best_solution = max(population, key=fitness)
+        return best_solution, fitness(best_solution)
+
     def execute(self, parameters, messages):
         # Extract parameter values
         aircraft_table = parameters[0].valueAsText
@@ -267,6 +321,7 @@ class CalculateMaximumOnGround(object):
         manual_peripheral_taxi_width = parameters[7].value
         out_aircraft_fc = parameters[8].valueAsText  # Output Aircraft Feature Class
         out_constraint_fc = parameters[9].valueAsText  # Output Constraint Feature Class
+        use_genetic_algorithm = parameters[10].value  # Use Genetic Algorithm parameter
 
         try:
             # Define the target spatial reference
@@ -375,6 +430,15 @@ class CalculateMaximumOnGround(object):
             # Wingtip clearance between parked aircraft
             wingtip_between_parked = 25  # Adjust as necessary
             arcpy.AddMessage(f"Using wingtip clearance between parked aircraft: {wingtip_between_parked} ft")
+
+            if use_genetic_algorithm:
+                arcpy.AddMessage("Running genetic algorithm for MOG calculation...")
+                best_solution, best_fitness = self.genetic_algorithm(
+                    apron_length, apron_width, aircraft_length, aircraft_wingspan,
+                    interior_taxi_width, peripheral_taxi_width, wingtip_between_parked
+                )
+                arcpy.AddMessage(f"Genetic Algorithm Result: Best Fitness = {best_fitness}")
+                return
 
             # Calculate parking availability
             (parking_available, num_rows_standard, num_cols_standard, num_rows_rotated, num_cols_rotated,
@@ -509,13 +573,13 @@ class CalculateMaximumOnGround(object):
             arcpy.AddMessage(f"Aircraft positions created in {out_aircraft_fc}, total aircraft placed: {aircraft_id - 1}")
 
             # After aircraft polygons are created, create constraint polygons
-            self.create_constraint_polygons(out_constraint_fc, sr, aircraft_records)
+            self.create_constraint_polygons(out_constraint_fc, sr, aircraft_records, dx_units, dy_units)
 
         except Exception as e:
             arcpy.AddError(f"An error occurred during the MOG calculation: {str(e)}")
             arcpy.AddError(traceback.format_exc())
 
-    def create_constraint_polygons(self, out_constraint_fc, sr, aircraft_records):
+    def create_constraint_polygons(self, out_constraint_fc, sr, aircraft_records, constraint_wingspan, constraint_length):
         """
         Creates constraint polygons based on the aircraft polygons.
         Each constraint polygon is a larger rectangle around the aircraft.
@@ -532,11 +596,6 @@ class CalculateMaximumOnGround(object):
                     length = record["Length"]
                     wingspan = record["Wingspan"]
                     rotation = record["Rotation"]  # Get the rotation angle
-
-                    # Define the size of the constraint polygon
-                    clearance_factor = 1.2  # 20% larger
-                    constraint_length = length * clearance_factor
-                    constraint_wingspan = wingspan * clearance_factor
 
                     # Create constraint rectangle corners (unrotated)
                     half_length = constraint_length / 2
