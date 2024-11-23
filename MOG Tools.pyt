@@ -573,13 +573,13 @@ class CalculateMaximumOnGround(object):
             arcpy.AddMessage(f"Aircraft positions created in {out_aircraft_fc}, total aircraft placed: {aircraft_id - 1}")
 
             # After aircraft polygons are created, create constraint polygons
-            self.create_constraint_polygons(out_constraint_fc, sr, aircraft_records)
+            self.create_constraint_polygons(out_constraint_fc, sr, aircraft_records, dx_units, dy_units)
 
         except Exception as e:
             arcpy.AddError(f"An error occurred during the MOG calculation: {str(e)}")
             arcpy.AddError(traceback.format_exc())
 
-    def create_constraint_polygons(self, out_constraint_fc, sr, aircraft_records):
+    def create_constraint_polygons(self, out_constraint_fc, sr, aircraft_records, constraint_wingspan, constraint_length):
         """
         Creates constraint polygons based on the aircraft polygons.
         Each constraint polygon is a larger rectangle around the aircraft.
@@ -596,11 +596,6 @@ class CalculateMaximumOnGround(object):
                     length = record["Length"]
                     wingspan = record["Wingspan"]
                     rotation = record["Rotation"]  # Get the rotation angle
-
-                    # Define the size of the constraint polygon
-                    clearance_factor = 1.2  # 20% larger
-                    constraint_length = length * clearance_factor
-                    constraint_wingspan = wingspan * clearance_factor
 
                     # Create constraint rectangle corners (unrotated)
                     half_length = constraint_length / 2
