@@ -324,9 +324,19 @@ class CalculateMaximumOnGround(object):
         use_genetic_algorithm = parameters[10].value  # Use Genetic Algorithm parameter
 
         try:
-            # Define the target spatial reference
-            target_sr_code = 26917
+            # Calculate UTM zone from airfield layer
+            utm_zone, hemisphere = self.get_utm_zone_from_coordinates(airfield_layer)
+            if utm_zone is None:
+                return
+
+            # Define the target spatial reference using the calculated UTM zone
+            target_sr_code = 32600 + utm_zone if hemisphere == 'N' else 32700 + utm_zone
             target_sr = arcpy.SpatialReference(target_sr_code)
+            arcpy.AddMessage(f"Using target spatial reference: {target_sr.name}")
+
+            # Set the current spatial reference to WGS 1984
+            wgs84_sr = arcpy.SpatialReference(4326)
+            arcpy.AddMessage(f"Using WGS 1984 spatial reference: {wgs84_sr.name}")
 
             # Get the current spatial reference of the airfield layer
             current_sr = arcpy.Describe(airfield_layer).spatialReference
@@ -648,3 +658,34 @@ class CalculateMaximumOnGround(object):
                 return float(row[0])  # Return the requested dimension as float
         arcpy.AddError(f"Airfield '{airfield_layer}' not found or dimension '{dimension_field}' not available.")
         return None  # Return None if not found
+
+    def get_utm_zone_from_coordinates(self, airfield_layer):
+        """
+        Extracts the UTM zone from the airfield layer's centroid coordinates.
+        
+        :param airfield_layer: The airfield layer from which to extract the UTM zone.
+        :return: The UTM zone as an integer.
+        """
+        try:
+            # Get the centroid of the airfield layer
+            with arcpy.da.SearchCursor(airfield_layer, ["SHAPE@XY"]) as cursor:
+                for row in cursor:
+                    longitude, latitude = row[0]
+                    break
+                else:
+                    arcpy.AddError("No valid geometry found in the airfield layer.")
+                    return None
+
+            # Calculate UTM zone
+            utm_zone = int((longitude + 180) / 6) + 1
+
+            # Determine hemisphere
+            hemisphere = 'N' if latitude >= 0 else 'S'
+
+            arcpy.AddMessage(f"Calculated UTM Zone: {utm_zone}{hemisphere}")
+            return utm_zone, hemisphere
+
+        except Exception as e:
+            arcpy.AddError(f"An error occurred while calculating the UTM zone: {str(e)}")
+            arcpy.AddError(traceback.format_exc())
+            return None
