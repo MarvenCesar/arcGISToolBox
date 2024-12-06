@@ -53,10 +53,10 @@ This tool is tailored for airfield operators, planners, and decision-makers, ena
    git clone https://github.com/MarvenCesar/arcGISToolBox.git
    ```
 
-2. **Add the Toolbox to ArcGIS Pro**
+2. **Add the Correct Toolbox to ArcGIS Pro**
    - Open ArcGIS Pro.
    - In the **Catalog Pane**, right-click **Toolboxes** > **Add Toolbox**.
-   - Navigate to the downloaded `.pyt` file and add it to your project.
+   - Navigate to the downloaded `MOGTools.pyt` file and add it to your project.
 
 3. **Configure Inputs**
    - Ensure your input data, such as airfield layers and aircraft tables, are ready and accessible.
