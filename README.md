@@ -34,7 +34,7 @@ This tool is tailored for airfield operators, planners, and decision-makers, ena
 ### Software
 - **ArcGIS Pro** (Required)
   - Must be installed with an active license.
-- **Python 3.x**
+- **Python 3.14**
   - Included with ArcGIS Pro; ensure the ArcGIS Pro Python environment is active.
 
 ### Dependencies
